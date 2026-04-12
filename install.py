@@ -145,7 +145,7 @@ def find_module_hooks(module_name: str, cfg: Dict[str, Any], ctx: Dict[str, Any]
             source_dir = ctx["config_dir"] / op["source"]
 
             # Check both target and source directories
-            for base_dir, plugin_root in [(target_dir, str(target_dir)), (source_dir, str(target_dir))]:
+            for base_dir, plugin_root in [(target_dir, target_dir.as_posix()), (source_dir, target_dir.as_posix())]:
                 # First check {dir}/hooks/hooks.json (for skills)
                 hooks_file = base_dir / "hooks" / "hooks.json"
                 if hooks_file.exists() and str(hooks_file) not in seen_paths:

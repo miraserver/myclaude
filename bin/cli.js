@@ -394,7 +394,7 @@ function mergeModuleHooks(moduleName, mod, installDir) {
     } catch {
       continue;
     }
-    if (mergeHooksToSettings(moduleName, hooksConfig, installDir, targetDir)) merged = true;
+    if (mergeHooksToSettings(moduleName, hooksConfig, installDir, targetDir.replace(/\\/g, '/'))) merged = true;
   }
 
   return merged;

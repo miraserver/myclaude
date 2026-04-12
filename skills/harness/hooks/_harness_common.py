@@ -14,6 +14,7 @@ import os
 import shutil
 import sys
 import time
+import tempfile
 from pathlib import Path
 from typing import Any, Optional
 
@@ -190,7 +191,7 @@ def tail_text(path: Path, max_bytes: int = 200_000) -> str:
 
 def lockdir_for_root(root: Path) -> Path:
     h = hashlib.sha256(str(root).encode("utf-8")).hexdigest()[:16]
-    return Path("/tmp") / f"harness-{h}.lock"
+    return Path(tempfile.gettempdir()) / f"harness-{h}.lock"
 
 
 def _pid_alive(pid: int) -> bool:

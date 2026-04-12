@@ -44,7 +44,7 @@ def save_settings(settings: dict):
         json.dump(settings, f, indent=2)
 
 def add_hook(settings: dict) -> dict:
-    hook_command = str(Path(HOOK_PATH).expanduser())
+    hook_command = Path(HOOK_PATH).expanduser().as_posix()
     hook_entry = {
         "type": "command",
         "command": f"python3 {hook_command}"
