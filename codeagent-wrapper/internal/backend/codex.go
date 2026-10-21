@@ -63,6 +63,9 @@ func BuildCodexArgs(cfg *config.Config, targetArg string) []string {
 	args = append(args, "--skip-git-repo-check")
 
 	if isResume {
+		if cfg.WorkDir != "" {
+			args = append(args, "-C", cfg.WorkDir)
+		}
 		return append(args,
 			"--json",
 			"resume",

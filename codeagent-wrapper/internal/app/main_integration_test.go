@@ -221,6 +221,10 @@ func createTempLog(t *testing.T, dir, name string) string {
 	if err := os.WriteFile(path, []byte("test"), 0o644); err != nil {
 		t.Fatalf("failed to create temp log %s: %v", path, err)
 	}
+	aged := time.Now().Add(-48 * time.Hour)
+	if err := os.Chtimes(path, aged, aged); err != nil {
+		t.Fatal(err)
+	}
 	return path
 }
 
@@ -755,7 +759,7 @@ func TestRunStartupCleanupRemovesOrphansEndToEnd(t *testing.T) {
 	})
 	stubProcessStartTime(t, func(pid int) time.Time {
 		if pid == runningPID || pid == os.Getpid() {
-			return time.Now().Add(-1 * time.Hour)
+			return time.Now().Add(-72 * time.Hour)
 		}
 		return time.Time{}
 	})
@@ -841,7 +845,7 @@ func TestRunCleanupFlagEndToEnd_Success(t *testing.T) {
 	})
 	stubProcessStartTime(t, func(pid int) time.Time {
 		if pid == keeperPID || pid == basePID {
-			return time.Now().Add(-1 * time.Hour)
+			return time.Now().Add(-72 * time.Hour)
 		}
 		return time.Time{}
 	})

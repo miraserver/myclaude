@@ -61,7 +61,7 @@ func BuildPlan(input BuildInput, deps BuildDeps) (Plan, error) {
 		if strings.TrimSpace(cfg.Tasks[i].Backend) == "" {
 			cfg.Tasks[i].Backend = backendName
 		}
-		if strings.TrimSpace(cfg.Tasks[i].Model) == "" && model != "" {
+		if strings.TrimSpace(cfg.Tasks[i].Model) == "" && model != "" && cfg.Tasks[i].Backend == backendName {
 			cfg.Tasks[i].Model = model
 		}
 		cfg.Tasks[i].SkipPermissions = cfg.Tasks[i].SkipPermissions || input.SkipPermissions

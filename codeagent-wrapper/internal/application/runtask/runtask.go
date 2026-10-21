@@ -27,6 +27,7 @@ type Command struct {
 	Model              string
 	ReasoningEffort    string
 	Agent              string
+	Yolo               bool
 	SkipPermissions    bool
 	Worktree           bool
 	AllowedTools       []string
@@ -77,6 +78,7 @@ func PreparePlan(cmd Command, deps PrepareDeps) (Plan, error) {
 		ReasoningEffort: cmd.ReasoningEffort,
 		Agent:           cmd.Agent,
 		SkipPermissions: cmd.SkipPermissions,
+		Yolo:            cmd.Yolo,
 		Worktree:        cmd.Worktree,
 		AllowedTools:    cmd.AllowedTools,
 		DisallowedTools: cmd.DisallowedTools,

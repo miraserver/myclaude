@@ -16,6 +16,7 @@ type Spec struct {
 	ReasoningEffort string
 	Agent           string
 	PromptFile      string
+	Yolo            bool
 	SkipPermissions bool
 	Worktree        bool
 	AllowedTools    []string

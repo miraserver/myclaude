@@ -166,7 +166,7 @@ func TestLoggerCleanupOldLogsRemovesOrphans(t *testing.T) {
 	stubProcessStartTime(t, func(pid int) time.Time {
 		if runningPIDs[pid] {
 			// Return a time before file creation
-			return time.Now().Add(-1 * time.Hour)
+			return time.Now().Add(-72 * time.Hour)
 		}
 		return time.Time{}
 	})
@@ -438,7 +438,7 @@ func TestLoggerCleanupOldLogsKeepsCurrentProcessLog(t *testing.T) {
 	})
 	stubProcessStartTime(t, func(pid int) time.Time {
 		if pid == currentPID {
-			return time.Now().Add(-1 * time.Hour)
+			return time.Now().Add(-72 * time.Hour)
 		}
 		return time.Time{}
 	})
@@ -665,6 +665,10 @@ func createTempLog(t *testing.T, dir, name string) string {
 	path := filepath.Join(dir, name)
 	if err := os.WriteFile(path, []byte("test"), 0o644); err != nil {
 		t.Fatalf("failed to create temp log %s: %v", path, err)
+	}
+	aged := time.Now().Add(-48 * time.Hour)
+	if err := os.Chtimes(path, aged, aged); err != nil {
+		t.Fatal(err)
 	}
 	return path
 }
@@ -956,5 +960,29 @@ func TestErrorEntriesMaxLimit(t *testing.T) {
 		if !strings.Contains(result[i+1], nextEntry) {
 			t.Fatalf("entry at index %d should contain %s, got: %s", i+1, nextEntry, result[i+1])
 		}
+	}
+}
+
+func TestCleanupPreservesFreshDeadPIDLog(t *testing.T) {
+	dir := setTempDirEnv(t, t.TempDir())
+	stubProcessRunning(t, func(int) bool { return false })
+	fresh := createTempLog(t, dir, "codeagent-wrapper-999991.log")
+	aged := createTempLog(t, dir, "codeagent-wrapper-999992.log")
+	now := time.Now()
+	if err := os.Chtimes(fresh, now, now); err != nil {
+		t.Fatal(err)
+	}
+	stats, err := cleanupOldLogs()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.Deleted != 1 || stats.Kept != 1 {
+		t.Fatal(stats)
+	}
+	if _, err := os.Stat(fresh); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(aged); !os.IsNotExist(err) {
+		t.Fatal("aged log retained")
 	}
 }

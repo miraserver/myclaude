@@ -1046,7 +1046,7 @@ func TestBackendParseArgs_ResumeMode(t *testing.T) {
 		{
 			name: "resume with task",
 			args: []string{"codeagent-wrapper", "resume", "session-123", "continue task"},
-			want: &Config{Mode: "resume", SessionID: "session-123", Task: "continue task", WorkDir: ".", ExplicitStdin: false, Backend: defaultBackendName},
+			want: &Config{Mode: "resume", SessionID: "session-123", Task: "continue task", WorkDir: "", ExplicitStdin: false, Backend: defaultBackendName},
 		},
 		{
 			name: "resume with workdir",
@@ -1056,7 +1056,7 @@ func TestBackendParseArgs_ResumeMode(t *testing.T) {
 		{
 			name: "resume with stdin",
 			args: []string{"codeagent-wrapper", "resume", "session-789", "-"},
-			want: &Config{Mode: "resume", SessionID: "session-789", Task: "-", WorkDir: ".", ExplicitStdin: true, Backend: defaultBackendName},
+			want: &Config{Mode: "resume", SessionID: "session-789", Task: "-", WorkDir: "", ExplicitStdin: true, Backend: defaultBackendName},
 		},
 		{name: "resume missing session_id", args: []string{"codeagent-wrapper", "resume"}, wantErr: true},
 		{name: "resume missing task", args: []string{"codeagent-wrapper", "resume", "session-123"}, wantErr: true},

@@ -39,6 +39,7 @@ func ParseConfig(data []byte) (*ParallelConfig, error) {
 
 		task := appruntask.Spec{WorkDir: defaultWorkdir}
 		agentSpecified := false
+		workdirSpecified := false
 		for _, line := range strings.Split(meta, "\n") {
 			line = strings.TrimSpace(line)
 			if line == "" {
@@ -55,6 +56,7 @@ func ParseConfig(data []byte) (*ParallelConfig, error) {
 			case "id":
 				task.ID = value
 			case "workdir":
+				workdirSpecified = true
 				if value == "-" {
 					return nil, fmt.Errorf("task block #%d has invalid workdir: '-' is not a valid directory path", taskIndex)
 				}
@@ -100,6 +102,9 @@ func ParseConfig(data []byte) (*ParallelConfig, error) {
 			}
 		}
 
+		if task.Mode == "resume" && !workdirSpecified {
+			task.WorkDir = ""
+		}
 		if task.Mode == "" {
 			task.Mode = "new"
 		}
@@ -111,19 +116,20 @@ func ParseConfig(data []byte) (*ParallelConfig, error) {
 			if err := config.ValidateAgentName(task.Agent); err != nil {
 				return nil, fmt.Errorf("task block #%d invalid agent name: %w", taskIndex, err)
 			}
-			backend, model, promptFile, reasoning, _, _, _, allowedTools, disallowedTools, err := config.ResolveAgentConfig(task.Agent)
+			backend, model, promptFile, reasoning, _, _, yolo, allowedTools, disallowedTools, err := config.ResolveAgentConfig(task.Agent)
 			if err != nil {
 				return nil, fmt.Errorf("task block #%d failed to resolve agent %q: %w", taskIndex, task.Agent, err)
 			}
 			if task.Backend == "" {
 				task.Backend = backend
 			}
-			if task.Model == "" {
+			if task.Model == "" && task.Backend == backend {
 				task.Model = model
 			}
 			if task.ReasoningEffort == "" {
 				task.ReasoningEffort = reasoning
 			}
+			task.Yolo = yolo && task.Backend == backend
 			task.PromptFile = promptFile
 			task.AllowedTools = allowedTools
 			task.DisallowedTools = disallowedTools

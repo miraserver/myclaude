@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/signal"
 	"strings"
 
 	adaptercli "codeagent-wrapper/internal/adapter/cli"
@@ -11,6 +12,7 @@ import (
 	runtaskset "codeagent-wrapper/internal/application/runtaskset"
 	config "codeagent-wrapper/internal/config"
 	domaintask "codeagent-wrapper/internal/domain/task"
+	"codeagent-wrapper/internal/executor"
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
@@ -134,7 +136,9 @@ func runParallelMode(cmd *cobra.Command, args []string, opts *cliOptions, v *vip
 			})
 		},
 		RunPlan: func(plan runtaskset.Plan) (string, int, error) {
-			return runtaskset.RunPlan(context.Background(), plan, runtaskset.RunDeps{
+			ctx, stop := signal.NotifyContext(context.Background(), executor.TerminationSignals()...)
+			defer stop()
+			return runtaskset.RunPlan(ctx, plan, runtaskset.RunDeps{
 				ExecuteConcurrent: func(parentCtx context.Context, layers [][]runtask.Spec, maxWorkers int) []domaintask.TaskResult {
 					return executeConcurrentWithContext(parentCtx, layers, noExecutionTimeout, maxWorkers)
 				},

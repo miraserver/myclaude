@@ -111,6 +111,8 @@ func BuildSingleConfig(cmd *cobra.Command, args []string, rawArgv []string, opts
 		}
 	}
 
+	yolo = yolo && backendName == resolvedBackend
+
 	modelFlagChanged := cmd.Flags().Changed("model")
 	if modelFlagChanged {
 		model = strings.TrimSpace(opts.Model)
@@ -122,9 +124,9 @@ func BuildSingleConfig(cmd *cobra.Command, args []string, rawArgv []string, opts
 	switch {
 	case agentFlagChanged && modelFlagChanged && LastFlagIndex(rawArgv, "agent") > LastFlagIndex(rawArgv, "model"):
 		model = strings.TrimSpace(resolvedModel)
-	case !modelFlagChanged && agentName != "":
+	case !modelFlagChanged && agentName != "" && backendName == resolvedBackend:
 		model = strings.TrimSpace(resolvedModel)
-	case !modelFlagChanged:
+	case !modelFlagChanged && agentName == "":
 		model = strings.TrimSpace(v.GetString("model"))
 	}
 
@@ -184,6 +186,7 @@ func BuildSingleConfig(cmd *cobra.Command, args []string, rawArgv []string, opts
 			return nil, fmt.Errorf("resume mode requires: resume <session_id> <task>")
 		}
 		cfg.Mode = "resume"
+		cfg.WorkDir = ""
 		cfg.SessionID = strings.TrimSpace(args[1])
 		if cfg.SessionID == "" {
 			return nil, fmt.Errorf("resume mode requires non-empty session_id")

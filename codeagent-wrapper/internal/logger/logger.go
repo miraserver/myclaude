@@ -458,6 +458,13 @@ func cleanupOldLogs() (CleanupStats, error) {
 			continue
 		}
 
+		info, err := fileStatFn(path)
+		if err != nil || time.Since(info.ModTime()) <= staleLogAge {
+			stats.Kept++
+			stats.KeptFiles = append(stats.KeptFiles, filename)
+			continue
+		}
+
 		// Check if process is running
 		if !processRunningCheck(pid) {
 			// Process not running, safe to delete
@@ -650,3 +657,5 @@ func LogConcurrencyState(event, taskID string, active, limit int) {
 }
 
 func SanitizeLogSuffix(raw string) string { return sanitizeLogSuffix(raw) }
+
+const staleLogAge = 24 * time.Hour

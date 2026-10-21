@@ -42,13 +42,31 @@ func TestBuildCodexArgs_Workdir_OSPaths(t *testing.T) {
 	})
 }
 
-func TestBuildCodexArgs_ResumeMode_OmitsWorkdir(t *testing.T) {
+func TestBuildCodexArgs_ResumeMode_HonorsWorkdir(t *testing.T) {
 	t.Setenv("CODEX_BYPASS_SANDBOX", "false")
 
 	cfg := &config.Config{Mode: "resume", SessionID: "sid-123", WorkDir: `C:\repo\path`}
 	got := BuildCodexArgs(cfg, "-")
-	want := []string{"e", "--skip-git-repo-check", "--json", "resume", "sid-123", "-"}
+	count := 0
+	for _, arg := range got {
+		if arg == "-C" {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Fatalf("expected exactly one -C: %v", got)
+	}
+	want := []string{"e", "--skip-git-repo-check", "-C", `C:\repo\path`, "--json", "resume", "sid-123", "-"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("BuildCodexArgs() = %v, want %v", got, want)
+	}
+}
+
+func TestResumeWithoutWorkdirInheritsCWD(t *testing.T) {
+	t.Setenv("CODEX_BYPASS_SANDBOX", "false")
+	args := BuildCodexArgs(&config.Config{Mode: "resume", SessionID: "sid"}, "task")
+	want := []string{"e", "--skip-git-repo-check", "--json", "resume", "sid", "task"}
+	if !reflect.DeepEqual(args, want) {
+		t.Fatalf("%v", args)
 	}
 }

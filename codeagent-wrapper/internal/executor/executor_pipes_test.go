@@ -5,9 +5,12 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -25,7 +28,19 @@ func TestExecutorPipeHelper(t *testing.T) {
 		fmt.Fprintln(os.Stdout, `{"type":"result","subtype":"success","session_id":"tail-session","result":"final answer"}`)
 		os.Exit(0)
 	}
-	if mode == "hold" {
+	if mode == "hold-delayed-term" {
+		signals := make(chan os.Signal, 1)
+		signal.Notify(signals, syscall.SIGTERM)
+		_ = os.WriteFile(os.Getenv("EXECUTOR_PIPE_READY")+".child", nil, 0600)
+		<-signals
+		time.Sleep(100 * time.Millisecond)
+		os.Exit(0)
+	}
+	if mode == "hold" || mode == "hold-ignore-term" {
+		if mode == "hold-ignore-term" {
+			signal.Ignore(syscall.SIGTERM)
+			_ = os.WriteFile(os.Getenv("EXECUTOR_PIPE_READY")+".child", nil, 0600)
+		}
 		// A release file and a deadline let the test clean up even on failure.
 		deadline := time.Now().Add(20 * time.Second)
 		for time.Now().Before(deadline) {
@@ -36,22 +51,50 @@ func TestExecutorPipeHelper(t *testing.T) {
 		}
 		os.Exit(0)
 	}
+	signals := make(chan os.Signal, 1)
+	signal.Notify(signals, os.Interrupt, syscall.SIGTERM)
+	defer signal.Stop(signals)
 	child := exec.Command(os.Args[0], "-test.run=^TestExecutorPipeHelper$")
-	child.Env = append(os.Environ(), "EXECUTOR_PIPE_HELPER=hold")
+	childMode := "hold"
+	if mode == "cancel-stubborn-grandchild" {
+		childMode = "hold-ignore-term"
+	}
+	if mode == "cancel-delayed-grandchild" {
+		childMode = "hold-delayed-term"
+	}
+	child.Env = append(os.Environ(), "EXECUTOR_PIPE_HELPER="+childMode)
+	configureDetachedTestChild(child)
 	child.Stdout, child.Stderr = os.Stdout, os.Stderr
 	if err := child.Start(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(2)
 	}
+	if mode == "cancel-stubborn-grandchild" || mode == "cancel-delayed-grandchild" {
+		deadline := time.Now().Add(5 * time.Second)
+		for {
+			if _, err := os.Stat(os.Getenv("EXECUTOR_PIPE_READY") + ".child"); err == nil {
+				break
+			}
+			if time.Now().After(deadline) {
+				os.Exit(4)
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
 	if err := os.WriteFile(os.Getenv("EXECUTOR_PIPE_READY"), []byte(strconv.Itoa(child.Process.Pid)), 0600); err != nil {
 		os.Exit(3)
 	}
+	fmt.Fprintf(os.Stdout, "grandchild PID: %d\n", child.Process.Pid)
 	fmt.Fprintln(os.Stdout, `{"type":"result","subtype":"success","result":"final answer"}`)
 	if mode == "exit-with-grandchild" {
 		os.Exit(0)
 	}
-	// Cancellation kills this parent while its grandchild retains both pipes.
-	time.Sleep(20 * time.Second)
+	// Reap the grandchild on Unix so the assertion observes ESRCH, not a zombie.
+	select {
+	case <-signals:
+		_ = child.Wait()
+	case <-time.After(20 * time.Second):
+	}
 	os.Exit(0)
 }
 
@@ -62,7 +105,7 @@ func useExecutorPipeHelper(t *testing.T, mode string) {
 	t.Setenv("EXECUTOR_PIPE_HELPER", mode)
 	original := commandContext
 	commandContext = func(ctx context.Context, _ string, _ ...string) *exec.Cmd {
-		return exec.CommandContext(ctx, os.Args[0], "-test.run=^TestExecutorPipeHelper$")
+		return exec.Command(os.Args[0], "-test.run=^TestExecutorPipeHelper$")
 	}
 	t.Cleanup(func() { commandContext = original })
 }
@@ -111,9 +154,18 @@ func TestDrainWithGrace(t *testing.T) {
 }
 
 func TestExecutorBoundsInheritedPipes(t *testing.T) {
-	for _, mode := range []string{"cancel-with-grandchild", "exit-with-grandchild"} {
+	for _, mode := range []string{"cancel-with-grandchild", "cancel-stubborn-grandchild", "cancel-delayed-grandchild", "exit-with-grandchild"} {
 		t.Run(mode, func(t *testing.T) {
+			if mode == "cancel-delayed-grandchild" && runtime.GOOS == "windows" {
+				t.Skip("Unix graceful SIGTERM")
+			}
 			useExecutorPipeHelper(t, mode)
+			delay := int32(1)
+			if mode == "cancel-delayed-grandchild" {
+				delay = 5
+			}
+			originalDelay := forceKillDelay.Swap(delay)
+			t.Cleanup(func() { forceKillDelay.Store(originalDelay) })
 			dir := t.TempDir()
 			ready, release := filepath.Join(dir, "ready"), filepath.Join(dir, "release")
 			t.Setenv("EXECUTOR_PIPE_READY", ready)
@@ -157,21 +209,43 @@ func TestExecutorBoundsInheritedPipes(t *testing.T) {
 				time.Sleep(10 * time.Millisecond)
 			}
 			start := time.Now()
-			if mode == "cancel-with-grandchild" {
+			if mode != "exit-with-grandchild" {
 				cancel()
 			}
 			result := <-done
 			elapsed := time.Since(start)
+			if mode == "cancel-delayed-grandchild" && elapsed >= 2*time.Second {
+				t.Fatalf("delayed grandchild cancellation took %v", elapsed)
+			}
 			if mode == "exit-with-grandchild" && elapsed > pipeDrainGracePeriod+500*time.Millisecond {
 				t.Fatalf("grandchild-held stdout delayed return by %v: %+v", elapsed, result)
 			}
 			if elapsed > 4*time.Second {
 				t.Fatalf("inherited pipes delayed return by %v: %+v", elapsed, result)
 			}
-			if mode == "cancel-with-grandchild" {
+			if mode != "exit-with-grandchild" {
+				data, err := os.ReadFile(ready)
+				if err != nil {
+					t.Fatal(err)
+				}
+				pid, err := strconv.Atoi(string(data))
+				if err != nil {
+					t.Fatal(err)
+				}
+				deadline := time.Now().Add(5 * time.Second)
+				for processStillRunning(pid) && time.Now().Before(deadline) {
+					time.Sleep(10 * time.Millisecond)
+				}
+				if processStillRunning(pid) {
+					t.Fatalf("grandchild PID %d survived cancellation", pid)
+				}
 				if result.ExitCode != 130 {
 					t.Fatalf("expected cancellation: %+v", result)
 				}
+			} else if data, err := os.ReadFile(ready); err != nil {
+				t.Fatal(err)
+			} else if pid, err := strconv.Atoi(string(data)); err != nil || !processStillRunning(pid) {
+				t.Fatalf("grandchild did not survive successful return: pid=%d err=%v", pid, err)
 			} else if result.ExitCode != 0 || result.Message != "final answer" {
 				t.Fatalf("expected final output after child exit: %+v", result)
 			}

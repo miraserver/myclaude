@@ -443,3 +443,31 @@ func TestConcurrentCancellationPropagation(t *testing.T) {
 		t.Fatalf("expected cancellation to propagate, got results: %+v", results)
 	}
 }
+
+// All three tasks contend for one worker. Once the first runner cancels the
+// context and releases its slot, neither waiter may call the runner.
+func TestConcurrentCancellationStopsQueuedTasks(t *testing.T) {
+	orig := runCodexTaskFn
+	t.Cleanup(func() { runCodexTaskFn = orig })
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var started []string
+	runCodexTaskFn = func(task TaskSpec, timeout int) TaskResult {
+		started = append(started, task.ID)
+		cancel()
+		<-task.Context.Done()
+		return TaskResult{TaskID: task.ID, ExitCode: 130, Error: "execution cancelled"}
+	}
+	results := executeConcurrentWithContext(ctx, [][]TaskSpec{{{ID: "1"}, {ID: "2"}, {ID: "3"}}}, 0, 1)
+	if len(started) != 1 {
+		t.Fatalf("started tasks = %v, want only one", started)
+	}
+	if len(results) != 3 {
+		t.Fatalf("results = %+v, want all three tasks", results)
+	}
+	for _, result := range results {
+		if result.ExitCode != 130 || result.Error != "execution cancelled" {
+			t.Fatalf("expected cancelled task, got %+v", result)
+		}
+	}
+}

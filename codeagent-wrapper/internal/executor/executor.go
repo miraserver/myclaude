@@ -13,7 +13,6 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
-	"syscall"
 	"time"
 
 	backend "codeagent-wrapper/internal/backend"
@@ -46,8 +45,10 @@ const (
 
 // Hook points (tests can override inside this package).
 var (
-	selectBackendFn    = backend.Select
-	commandContext     = exec.CommandContext
+	selectBackendFn = backend.Select
+	commandContext  = func(_ context.Context, name string, args ...string) *exec.Cmd {
+		return exec.Command(name, args...)
+	}
 	terminateCommandFn = terminateCommand
 	createWorktreeFn   = worktree.CreateWorktree
 )
@@ -163,19 +164,26 @@ type processHandle interface {
 type realCmd struct {
 	cmd         *exec.Cmd
 	pipeWriters []*os.File
+	tree        processTree
 }
 
 func (r *realCmd) Start() error {
 	if r.cmd == nil {
 		return errors.New("command is nil")
 	}
+	configureProcessTree(r.cmd)
 	err := r.cmd.Start()
+	if err == nil {
+		r.tree.attach(r.cmd.Process)
+	}
 	for _, w := range r.pipeWriters {
 		_ = w.Close()
 	}
 	r.pipeWriters = nil
 	return err
 }
+
+func (r *realCmd) CloseProcessTree() { r.tree.close() }
 
 func (r *realCmd) ClosePipes() {
 	for _, w := range r.pipeWriters {
@@ -188,7 +196,9 @@ func (r *realCmd) Wait() error {
 	if r.cmd == nil {
 		return errors.New("command is nil")
 	}
-	return r.cmd.Wait()
+	err := r.cmd.Wait()
+	r.tree.markReaped()
+	return err
 }
 
 func (r *realCmd) outputPipe(stderr bool) (io.ReadCloser, error) {
@@ -341,12 +351,13 @@ func (r *realCmd) Process() processHandle {
 	if r == nil || r.cmd == nil || r.cmd.Process == nil {
 		return nil
 	}
-	return &realProcess{proc: r.cmd.Process}
+	return &realProcess{proc: r.cmd.Process, tree: &r.tree}
 }
 
 // realProcess implements processHandle using os.Process
 type realProcess struct {
 	proc *os.Process
+	tree *processTree
 }
 
 func (p *realProcess) Pid() int {
@@ -359,6 +370,9 @@ func (p *realProcess) Pid() int {
 func (p *realProcess) Kill() error {
 	if p == nil || p.proc == nil {
 		return nil
+	}
+	if p.tree != nil {
+		return p.tree.kill()
 	}
 	return p.proc.Kill()
 }
@@ -604,6 +618,10 @@ func ExecuteConcurrentWithContext(parentCtx context.Context, layers [][]TaskSpec
 					return
 				}
 				defer releaseSlot()
+				if ctx.Err() != nil {
+					resultsCh <- cancelledTaskResult(ts.ID, ctx)
+					return
+				}
 
 				current := atomic.AddInt64(&activeWorkers, 1)
 				logConcurrencyState("start", ts.ID, int(current), workerLimit)
@@ -889,56 +907,11 @@ func GenerateFinalOutputWithMode(results []TaskResult, summaryOnly bool) string 
 }
 
 func buildCodexArgs(cfg *Config, targetArg string) []string {
-	if cfg == nil {
-		panic("buildCodexArgs: nil config")
-	}
-
-	var resumeSessionID string
-	isResume := cfg.Mode == "resume"
-	if isResume {
-		resumeSessionID = strings.TrimSpace(cfg.SessionID)
-		if resumeSessionID == "" {
-			logError("invalid config: resume mode requires non-empty session_id")
-			isResume = false
-		}
-	}
-
-	args := []string{"e"}
-
-	// Default to bypass sandbox unless CODEX_BYPASS_SANDBOX=false
-	if cfg.Yolo || config.EnvFlagDefaultTrue("CODEX_BYPASS_SANDBOX") {
-		logWarn("YOLO mode or CODEX_BYPASS_SANDBOX enabled: running without approval/sandbox protection")
-		args = append(args, "--dangerously-bypass-approvals-and-sandbox")
-	}
-
-	if model := strings.TrimSpace(cfg.Model); model != "" {
-		args = append(args, "--model", model)
-	}
-
-	if reasoningEffort := strings.TrimSpace(cfg.ReasoningEffort); reasoningEffort != "" {
-		args = append(args, "-c", "model_reasoning_effort="+reasoningEffort)
-	}
-
-	args = append(args, "--skip-git-repo-check")
-
-	if isResume {
-		return append(args,
-			"--json",
-			"resume",
-			resumeSessionID,
-			targetArg,
-		)
-	}
-
-	return append(args,
-		"-C", cfg.WorkDir,
-		"--json",
-		targetArg,
-	)
+	return backend.BuildCodexArgs(cfg, targetArg)
 }
 
 func RunCodexTaskWithContext(parentCtx context.Context, taskSpec TaskSpec, backend Backend, defaultCommandName string, defaultArgsBuilder func(*Config, string) []string, customArgs []string, useCustomArgs bool, silent bool, timeoutSec int) TaskResult {
-	_ = timeoutSec
+	_ = timeoutSec // Legacy argument; execution has no wrapper timeout.
 	taskCtx := taskSpec.Context
 	if parentCtx == nil {
 		parentCtx = taskCtx
@@ -962,6 +935,7 @@ func RunCodexTaskWithContext(parentCtx context.Context, taskSpec TaskSpec, backe
 		Model:           taskSpec.Model,
 		ReasoningEffort: taskSpec.ReasoningEffort,
 		SkipPermissions: taskSpec.SkipPermissions,
+		Yolo:            taskSpec.Yolo,
 		Backend:         defaultBackendName,
 		AllowedTools:    taskSpec.AllowedTools,
 		DisallowedTools: taskSpec.DisallowedTools,
@@ -993,8 +967,14 @@ func RunCodexTaskWithContext(parentCtx context.Context, taskSpec TaskSpec, backe
 	if cfg.Mode == "" {
 		cfg.Mode = "new"
 	}
-	if cfg.WorkDir == "" {
+	if cfg.WorkDir == "" && cfg.Mode != "resume" {
 		cfg.WorkDir = defaultWorkdir
+	}
+
+	if cfg.Mode == "resume" && strings.TrimSpace(cfg.SessionID) == "" {
+		result.ExitCode = 1
+		result.Error = "resume mode requires non-empty session_id"
+		return result
 	}
 
 	// Handle worktree mode: check DO_WORKTREE_DIR env var first, then create if needed
@@ -1010,14 +990,11 @@ func RunCodexTaskWithContext(parentCtx context.Context, taskSpec TaskSpec, backe
 			result.Error = fmt.Sprintf("failed to create worktree: %v", err)
 			return result
 		}
-		cfg.WorkDir = paths.Dir
+		cfg.WorkDir = paths.WorkDir
+		if cfg.WorkDir == "" {
+			cfg.WorkDir = paths.Dir
+		}
 		logInfo(fmt.Sprintf("Using worktree: %s (task_id: %s, branch: %s)", paths.Dir, paths.TaskID, paths.Branch))
-	}
-
-	if cfg.Mode == "resume" && strings.TrimSpace(cfg.SessionID) == "" {
-		result.ExitCode = 1
-		result.Error = "resume mode requires non-empty session_id"
-		return result
 	}
 
 	var fileEnv map[string]string
@@ -1127,7 +1104,7 @@ func RunCodexTaskWithContext(parentCtx context.Context, taskSpec TaskSpec, backe
 	}
 
 	ctx := parentCtx
-	ctx, stop := signal.NotifyContext(ctx, syscall.SIGINT, syscall.SIGTERM)
+	ctx, stop := signal.NotifyContext(ctx, TerminationSignals()...)
 	defer stop()
 
 	attachStderr := func(msg string) string {
@@ -1192,7 +1169,7 @@ func RunCodexTaskWithContext(parentCtx context.Context, taskSpec TaskSpec, backe
 
 	// For backends that don't support -C flag (claude, gemini), set working directory via cmd.Dir
 	// Codex passes workdir via -C flag, so we skip setting Dir for it to avoid conflicts
-	if cfg.Mode != "resume" && commandName != "codex" && cfg.WorkDir != "" {
+	if commandName != "codex" && cfg.WorkDir != "" {
 		cmd.SetDir(cfg.WorkDir)
 	}
 
@@ -1263,6 +1240,17 @@ func RunCodexTaskWithContext(parentCtx context.Context, taskSpec TaskSpec, backe
 
 	logInfoFn(fmt.Sprintf("Starting %s with args: %s %s...", commandName, commandName, strings.Join(codexArgs[:min(5, len(codexArgs))], " ")))
 
+	if ctx.Err() != nil {
+		closeWithReason(stdout, stdoutCloseReasonCtx)
+		closeWithReason(stderr, stdoutCloseReasonCtx)
+		if stdinPipe != nil {
+			_ = stdinPipe.Close()
+		}
+		result.ExitCode = 130
+		result.Error = attachStderr("execution cancelled")
+		return result
+	}
+
 	if err := cmd.Start(); err != nil {
 		closeWithReason(stdout, "start-failed")
 		closeWithReason(stderr, "start-failed")
@@ -1282,6 +1270,9 @@ func RunCodexTaskWithContext(parentCtx context.Context, taskSpec TaskSpec, backe
 		return result
 	}
 	started = true
+	if cleanup, ok := cmd.(interface{ CloseProcessTree() }); ok {
+		defer cleanup.CloseProcessTree()
+	}
 
 	logInfoFn(fmt.Sprintf("Starting %s with PID: %d", commandName, cmd.Process().Pid()))
 	if logger != nil {
@@ -1373,16 +1364,21 @@ waitLoop:
 					waitErr = err
 					break waitLoop
 				case <-time.After(forceKillWaitTimeout):
-					if proc := cmd.Process(); proc != nil {
-						_ = proc.Kill()
-					}
+					// The tree termination timer owns escalation. Avoid PID-based
+					// termination after Wait may have reaped the leader.
 				}
 			}
 		}
 	}
 
+	// Wait and cancellation can become ready together. Still terminate the tree
+	// if Wait won the select and the context is already cancelled.
+	if !ctxCancelled && ctx.Err() != nil {
+		ctxCancelled = true
+		forceKillTimer = terminateCommandFn(cmd)
+	}
 	if forceKillTimer != nil {
-		forceKillTimer.Stop()
+		finishTreeTermination(cmd, forceKillTimer)
 	}
 
 	stderrDrained := false
@@ -1537,9 +1533,7 @@ func terminateCommand(cmd commandRunner) *forceKillTimer {
 
 	done := make(chan struct{}, 1)
 	timer := time.AfterFunc(time.Duration(forceKillDelay.Load())*time.Second, func() {
-		if p := cmd.Process(); p != nil {
-			_ = p.Kill()
-		}
+		_ = proc.Kill()
 		close(done)
 	})
 

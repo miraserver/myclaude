@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"strconv"
 	"strings"
 
 	runtask "codeagent-wrapper/internal/application/runtask"
@@ -95,6 +96,10 @@ func buildSingleTaskCommandArgs(cmd runtask.Command, targetArg string) []string 
 		Model:           cmd.Model,
 		ReasoningEffort: cmd.ReasoningEffort,
 		SkipPermissions: cmd.SkipPermissions,
+		Yolo:            cmd.Yolo,
+		Mode:            cmd.Mode,
+		SessionID:       cmd.SessionID,
+		WorkDir:         cmd.WorkDir,
 	}
 	return buildCodexArgsFn(cfg, targetArg)
 }
@@ -127,5 +132,9 @@ func resolveConfiguredMaxParallelWorkers(v *viper.Viper) int {
 	if v == nil || !v.IsSet("max-parallel-workers") {
 		return config.ResolveMaxParallelWorkers()
 	}
-	return config.NormalizeMaxParallelWorkers(v.GetInt("max-parallel-workers"))
+	value, err := strconv.Atoi(strings.TrimSpace(v.GetString("max-parallel-workers")))
+	if err != nil {
+		return config.DefaultMaxParallelWorkers
+	}
+	return config.NormalizeMaxParallelWorkers(value)
 }

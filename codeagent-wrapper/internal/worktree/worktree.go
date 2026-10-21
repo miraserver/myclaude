@@ -1,21 +1,25 @@
 package worktree
 
 import (
+	"codeagent-wrapper/internal/logger"
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 )
 
 // Paths contains worktree information
 type Paths struct {
-	Dir    string // .worktrees/do-{task_id}/
-	Branch string // do/{task_id}
-	TaskID string // auto-generated task_id
+	WorkDir string // Original project subdirectory within the new worktree
+	Dir     string // .worktrees/do-{task_id}/
+	Branch  string // do/{task_id}
+	TaskID  string // auto-generated task_id
 }
 
 // Hook points for testing
@@ -73,6 +77,22 @@ func CreateWorktree(projectDir string) (*Paths, error) {
 		return nil, err
 	}
 
+	if resolved, err := filepath.EvalSymlinks(gitRoot); err == nil {
+		gitRoot = resolved
+	}
+	projectAbs, relErr := filepath.Abs(projectDir)
+	if resolved, err := filepath.EvalSymlinks(projectAbs); err == nil {
+		projectAbs = resolved
+	}
+	var rel string
+	if relErr == nil {
+		rootForRel, projectForRel := gitRoot, projectAbs
+		if runtime.GOOS == "windows" {
+			rootForRel, projectForRel = strings.ToLower(rootForRel), strings.ToLower(projectForRel)
+		}
+		rel, relErr = filepath.Rel(rootForRel, projectForRel)
+	}
+
 	// Generate task ID
 	taskID, err := generateTaskID()
 	if err != nil {
@@ -89,9 +109,21 @@ func CreateWorktree(projectDir string) (*Paths, error) {
 		return nil, fmt.Errorf("failed to create worktree: %w\noutput: %s", err, string(output))
 	}
 
+	workDir := worktreeDir
+	if relErr != nil || filepath.IsAbs(rel) || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		logger.LogWarn(fmt.Sprintf("Cannot locate project %s within git root %s; using worktree root", projectDir, gitRoot))
+	} else if candidate := filepath.Join(worktreeDir, rel); rel != "." && rel != "" {
+		if info, err := os.Stat(candidate); err == nil && info.IsDir() {
+			workDir = candidate
+		} else {
+			logger.LogWarn(fmt.Sprintf("Project subdirectory %s missing from worktree; using worktree root", candidate))
+		}
+	}
+
 	return &Paths{
-		Dir:    worktreeDir,
-		Branch: branchName,
-		TaskID: taskID,
+		Dir:     worktreeDir,
+		WorkDir: workDir,
+		Branch:  branchName,
+		TaskID:  taskID,
 	}, nil
 }
