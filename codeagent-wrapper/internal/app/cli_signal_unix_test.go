@@ -36,7 +36,11 @@ func TestParallelSIGTERM(t *testing.T) {
 	for _, sig := range []syscall.Signal{syscall.SIGTERM, syscall.SIGHUP, syscall.SIGQUIT} {
 		t.Run(sig.String(), func(t *testing.T) {
 			ready := filepath.Join(t.TempDir(), "ready")
-			cmd := exec.Command(os.Args[0], "-test.run=^TestParallelSIGTERM$")
+			executable, err := os.Executable()
+			if err != nil {
+				t.Fatal(err)
+			}
+			cmd := exec.Command(executable, "-test.run=^TestParallelSIGTERM$")
 			cmd.Env = append(os.Environ(), "GORACE=atexit_sleep_ms=0", "PARALLEL_SIGNAL_HELPER=1", "PARALLEL_SIGNAL_READY="+ready, "CODEAGENT_MAX_PARALLEL_WORKERS=1")
 			var output bytes.Buffer
 			cmd.Stdout, cmd.Stderr = &output, &output

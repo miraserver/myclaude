@@ -34,7 +34,11 @@ func TestTreePollHelper(t *testing.T) {
 
 func TestFinishTreeTerminationPollsUntilGroupExits(t *testing.T) {
 	ready := filepath.Join(t.TempDir(), "ready")
-	cmd := exec.Command(os.Args[0], "-test.run=^TestTreePollHelper$")
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(executable, "-test.run=^TestTreePollHelper$")
 	cmd.Env = append(os.Environ(), "TREE_POLL_HELPER=1", "TREE_POLL_READY="+ready, "GORACE=atexit_sleep_ms=0")
 	runner := &realCmd{cmd: cmd}
 	if err := runner.Start(); err != nil {

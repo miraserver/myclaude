@@ -30,7 +30,11 @@ func TestWindowsProcessTreeHelper(t *testing.T) {
 		fmt.Fprintln(os.Stderr, "unknown tree helper mode:", mode)
 		os.Exit(2)
 	}
-	child := exec.Command(os.Args[0], "-test.run=^TestWindowsProcessTreeHelper$")
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	child := exec.Command(executable, "-test.run=^TestWindowsProcessTreeHelper$")
 	child.Env = append(os.Environ(), "EXECUTOR_WINDOWS_TREE_HELPER=sleep", "GORACE=atexit_sleep_ms=0")
 	if mode == "success" {
 		configureDetachedTestChild(child)
@@ -55,13 +59,17 @@ func TestWindowsProcessTreeHelper(t *testing.T) {
 
 func startWindowsProcessTreeHelper(t *testing.T, mode string) (int, <-chan TaskResult, context.CancelFunc) {
 	t.Helper()
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
 	pidFile := filepath.Join(t.TempDir(), "grandchild.pid")
 	t.Setenv("GORACE", "atexit_sleep_ms=0")
 	t.Setenv("EXECUTOR_WINDOWS_TREE_HELPER", mode)
 	t.Setenv("EXECUTOR_WINDOWS_TREE_PID", pidFile)
 	original := commandContext
 	commandContext = func(context.Context, string, ...string) *exec.Cmd {
-		return exec.Command(os.Args[0], "-test.run=^TestWindowsProcessTreeHelper$")
+		return exec.Command(executable, "-test.run=^TestWindowsProcessTreeHelper$")
 	}
 	t.Cleanup(func() { commandContext = original })
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)

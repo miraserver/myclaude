@@ -54,7 +54,11 @@ func TestExecutorPipeHelper(t *testing.T) {
 	signals := make(chan os.Signal, 1)
 	signal.Notify(signals, os.Interrupt, syscall.SIGTERM)
 	defer signal.Stop(signals)
-	child := exec.Command(os.Args[0], "-test.run=^TestExecutorPipeHelper$")
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	child := exec.Command(executable, "-test.run=^TestExecutorPipeHelper$")
 	childMode := "hold"
 	if mode == "cancel-stubborn-grandchild" {
 		childMode = "hold-ignore-term"
@@ -100,12 +104,16 @@ func TestExecutorPipeHelper(t *testing.T) {
 
 func useExecutorPipeHelper(t *testing.T, mode string) {
 	t.Helper()
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
 	// Disable the race runtime's exit sleep in self-exec helpers so pipe timing stays accurate.
 	t.Setenv("GORACE", "atexit_sleep_ms=0")
 	t.Setenv("EXECUTOR_PIPE_HELPER", mode)
 	original := commandContext
 	commandContext = func(ctx context.Context, _ string, _ ...string) *exec.Cmd {
-		return exec.Command(os.Args[0], "-test.run=^TestExecutorPipeHelper$")
+		return exec.Command(executable, "-test.run=^TestExecutorPipeHelper$")
 	}
 	t.Cleanup(func() { commandContext = original })
 }
