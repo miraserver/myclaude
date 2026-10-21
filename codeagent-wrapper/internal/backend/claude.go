@@ -127,6 +127,10 @@ func buildClaudeArgs(cfg *config.Config, targetArg string) []string {
 		args = append(args, "--model", model)
 	}
 
+	if effort := strings.TrimSpace(cfg.ReasoningEffort); effort != "" {
+		args = append(args, "--effort", effort)
+	}
+
 	if cfg.Mode == "resume" {
 		if cfg.SessionID != "" {
 			// Claude CLI uses -r <session_id> for resume.
