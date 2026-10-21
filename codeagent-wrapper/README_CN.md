@@ -194,7 +194,7 @@ skip-permissions: false
     "develop": {
       "backend": "codex",
       "model": "gpt-6.1-sol",
-      "prompt_file": "~/.codeagent/prompts/develop.md",
+      "prompt_file": "~/.codeagent/agents/develop.md",
       "reasoning": "high",
       "yolo": true,
       "allowed_tools": ["Read", "Write", "Bash"],
@@ -267,5 +267,5 @@ CI 使用 GitHub Actions，Go 1.21 / 1.22 矩阵测试。
 - macOS 下如果看到临时目录相关的 `permission denied`，可设置：`CODEAGENT_TMPDIR=$HOME/.codeagent/tmp`
 - `claude` 后端的 `base_url` / `api_key`（来自 `~/.codeagent/models.json` 的 `backends.claude`）会注入到子进程环境变量 `ANTHROPIC_BASE_URL` / `ANTHROPIC_API_KEY`
 - `gemini` 后端的 API key 从 `~/.gemini/.env` 加载，注入 `GEMINI_API_KEY` 并自动设置 `GEMINI_API_KEY_AUTH_MECHANISM=bearer`
-- 后端命令未找到时返回退出码 127，超时返回 124，中断返回 130
+- 后端命令未找到时返回退出码 127，中断返回 130；包装器没有执行超时
 - 并行模式默认输出结构化摘要，使用 `--full-output` 查看完整输出以便调试

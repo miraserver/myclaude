@@ -216,7 +216,7 @@ EOF
 
 ### Async Execution
 
-`codeagent-wrapper` no longer applies a wrapper-managed execution timeout. The wrapper waits for backend completion events/process exit, keeps the task log on disk, and reports per-task summaries as work finishes.
+`codeagent-wrapper` has no execution timeout. The wrapper waits for backend completion events/process exit, keeps the task log on disk, and reports per-task summaries as work finishes.
 
 ### Complex Multi-line Tasks
 
@@ -386,7 +386,7 @@ EOF
 2. **Descriptive task IDs** - Use `<feature>_<timestamp>` format
 3. **Absolute paths** - Avoid relative path confusion
 4. **Session resumption** - Continue conversations with context
-5. **Timeout tuning** - Set appropriate timeouts for task complexity
+5. **Cancellation** - Interrupt execution to stop the backend process tree
 
 ## Examples
 

@@ -194,7 +194,7 @@ Read via viper with automatic `-` to `_` mapping:
     "develop": {
       "backend": "codex",
       "model": "gpt-6.1-sol",
-      "prompt_file": "~/.codeagent/prompts/develop.md",
+      "prompt_file": "~/.codeagent/agents/develop.md",
       "reasoning": "high",
       "yolo": true,
       "allowed_tools": ["Read", "Write", "Bash"],
@@ -267,5 +267,5 @@ CI uses GitHub Actions with Go 1.21 / 1.22 matrix testing.
 - On macOS, if you see `permission denied` related to temp directories, set: `CODEAGENT_TMPDIR=$HOME/.codeagent/tmp`
 - `claude` backend's `base_url` / `api_key` (from `~/.codeagent/models.json` `backends.claude`) are injected as `ANTHROPIC_BASE_URL` / `ANTHROPIC_API_KEY` env vars
 - `gemini` backend's API key is loaded from `~/.gemini/.env`, injected as `GEMINI_API_KEY` with `GEMINI_API_KEY_AUTH_MECHANISM=bearer` auto-set
-- Exit codes: 127 = backend not found, 124 = timeout, 130 = interrupted
+- Exit codes: 127 = backend not found, 130 = interrupted; the wrapper has no execution timeout
 - Parallel mode outputs structured summary by default; use `--full-output` for complete output when debugging

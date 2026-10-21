@@ -68,7 +68,7 @@ Agent presets bundle backend, model, prompt, and tool control into a reusable na
     "develop": {
       "backend": "codex",
       "model": "gpt-6.1-sol",
-      "prompt_file": "~/.codeagent/prompts/develop.md",
+      "prompt_file": "~/.codeagent/agents/develop.md",
       "reasoning": "high",
       "yolo": true,
       "allowed_tools": ["Read", "Write", "Bash"],
