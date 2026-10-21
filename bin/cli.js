@@ -871,6 +871,16 @@ function defaultModelsConfig() {
   };
 }
 
+function agentDefaultsHash(cfg) {
+  function canonicalize(value) {
+    if (Array.isArray(value)) return value.map(canonicalize);
+    if (!isPlainObject(value)) return value;
+    return Object.fromEntries(Object.keys(value).sort().map((key) => [key, canonicalize(value[key])]));
+  }
+  const { __module__, __hash__, ...defaults } = cfg;
+  return crypto.createHash("sha256").update(JSON.stringify(canonicalize(defaults))).digest("hex").slice(0, 12);
+}
+
 function mergeModuleAgentsToModels(moduleName, mod, repoRoot) {
   const moduleAgents = mod && mod.agents;
   if (!isPlainObject(moduleAgents) || !Object.keys(moduleAgents).length) return false;
@@ -901,7 +911,9 @@ function mergeModuleAgentsToModels(moduleName, mod, repoRoot) {
     const existing = models.agents[agentName];
     const canOverwrite = !isPlainObject(existing) || Object.prototype.hasOwnProperty.call(existing, "__module__");
     if (!canOverwrite) continue;
-    const next = { ...agentCfg, __module__: moduleName };
+    if (isPlainObject(existing) && Object.prototype.hasOwnProperty.call(existing, "__hash__") &&
+        agentDefaultsHash(existing) !== existing.__hash__) continue;
+    const next = { ...agentCfg, __module__: moduleName, __hash__: agentDefaultsHash(agentCfg) };
     if (!deepEqual(existing, next)) {
       models.agents[agentName] = next;
       modified = true;
@@ -1414,6 +1426,8 @@ module.exports = {
   mergeHooksToSettings,
   unmergeHooksFromSettings,
   mergeModuleHooks,
+  mergeModuleAgentsToModels,
+  agentDefaultsHash,
   uninstallModule,
   parseArgs,
 };

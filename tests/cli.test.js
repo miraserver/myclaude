@@ -1,6 +1,7 @@
 "use strict";
 
 const assert = require("node:assert/strict");
+const crypto = require("node:crypto");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
@@ -14,6 +15,8 @@ const {
   mergeHooksToSettings,
   unmergeHooksFromSettings,
   mergeModuleHooks,
+  mergeModuleAgentsToModels,
+  agentDefaultsHash,
   uninstallModule,
   parseArgs,
 } = require("../bin/cli.js");
@@ -43,6 +46,126 @@ function fixture(t, settings = {}) {
 
 function commandEntry(command, extra = {}) {
   return { hooks: [{ type: "command", command, timeout: 1800 }], ...extra };
+}
+
+function modelsFixture(t, agents) {
+  const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "myclaude-models-"));
+  for (const name of ["USERPROFILE", "HOME"]) {
+    const previous = process.env[name];
+    process.env[name] = homeDir;
+    t.after(() => {
+      if (previous === undefined) delete process.env[name];
+      else process.env[name] = previous;
+    });
+  }
+  t.after(() => fs.rmSync(homeDir, { recursive: true, force: true }));
+  assert.equal(os.homedir(), homeDir);
+  const modelsPath = path.join(homeDir, ".codeagent", "models.json");
+  if (agents !== undefined) {
+    fs.mkdirSync(path.dirname(modelsPath), { recursive: true });
+    fs.writeFileSync(modelsPath, JSON.stringify({ agents }, null, 2) + "\n");
+  }
+  return {
+    modelsPath,
+    merge: (cfg) => mergeModuleAgentsToModels("do", { agents: { "code-reviewer": cfg } }, homeDir),
+    read: () => JSON.parse(fs.readFileSync(modelsPath, "utf8")),
+  };
+}
+
+test("agent defaults hash sorts keys recursively and ignores install metadata", () => {
+  const cfg = { reasoning: "high", options: { z: [{ b: 2, a: 1 }], a: true }, model: "gpt-6.1-sol" };
+  const canonical = '{"model":"gpt-6.1-sol","options":{"a":true,"z":[{"a":1,"b":2}]},"reasoning":"high"}';
+  const expected = crypto.createHash("sha256").update(canonical).digest("hex").slice(0, 12);
+  assert.equal(agentDefaultsHash(cfg), expected);
+  assert.equal(agentDefaultsHash({ ...cfg, __module__: "do", __hash__: "ignored" }), expected);
+  assert.notEqual(agentDefaultsHash({ ...cfg, options: { a: true, z: [{ a: 2, b: 1 }] } }), expected);
+});
+
+test("fresh agent merge writes module and defaults hash", (t) => {
+  const f = modelsFixture(t);
+  const cfg = { model: "gpt-6.1-sol", reasoning: "high" };
+  assert.equal(f.merge(cfg), true);
+  assert.deepEqual(f.read().agents["code-reviewer"], {
+    ...cfg, __module__: "do", __hash__: agentDefaultsHash(cfg),
+  });
+  assert.equal(fs.readFileSync(f.modelsPath, "utf8"), JSON.stringify(f.read(), null, 2) + "\n");
+});
+
+test("unchanged agent re-merge does not write models.json", (t) => {
+  const f = modelsFixture(t);
+  const cfg = { model: "gpt-6.1-sol", reasoning: "high" };
+  assert.equal(f.merge(cfg), true);
+  const bytes = fs.readFileSync(f.modelsPath, "utf8");
+  const oldTime = new Date("2000-01-01T00:00:00Z");
+  fs.utimesSync(f.modelsPath, oldTime, oldTime);
+  const mtime = fs.statSync(f.modelsPath).mtimeMs;
+  assert.equal(f.merge(cfg), false);
+  assert.equal(fs.readFileSync(f.modelsPath, "utf8"), bytes);
+  assert.equal(fs.statSync(f.modelsPath).mtimeMs, mtime);
+});
+
+test("unedited hashed agent gets new module defaults", (t) => {
+  const old = { model: "old-model", reasoning: "high" };
+  const f = modelsFixture(t, {
+    "code-reviewer": { ...old, __module__: "do", __hash__: agentDefaultsHash(old) },
+  });
+  const cfg = { model: "gpt-6.1-sol", reasoning: "medium" };
+  assert.equal(f.merge(cfg), true);
+  assert.deepEqual(f.read().agents["code-reviewer"], {
+    ...cfg, __module__: "do", __hash__: agentDefaultsHash(cfg),
+  });
+});
+
+test("user-edited hashed agent is preserved", (t) => {
+  const old = { model: "gpt-6.1-sol", reasoning: "medium" };
+  const edited = { ...old, model: "gpt-6-astra", __module__: "do", __hash__: agentDefaultsHash(old) };
+  const f = modelsFixture(t, { "code-reviewer": edited });
+  const bytes = fs.readFileSync(f.modelsPath, "utf8");
+  assert.equal(f.merge({ model: "new-model", reasoning: "high" }), false);
+  assert.deepEqual(f.read().agents["code-reviewer"], edited);
+  assert.equal(fs.readFileSync(f.modelsPath, "utf8"), bytes);
+});
+
+test("legacy module agent without a hash is overwritten", (t) => {
+  const f = modelsFixture(t, { "code-reviewer": { model: "old-model", __module__: "do" } });
+  const cfg = { model: "gpt-6.1-sol", reasoning: "high" };
+  assert.equal(f.merge(cfg), true);
+  assert.deepEqual(f.read().agents["code-reviewer"], {
+    ...cfg, __module__: "do", __hash__: agentDefaultsHash(cfg),
+  });
+});
+
+test("agent without module ownership is untouched", (t) => {
+  const cfg = { model: "gpt-6-astra", reasoning: "medium" };
+  const f = modelsFixture(t, { "code-reviewer": cfg });
+  const bytes = fs.readFileSync(f.modelsPath, "utf8");
+  assert.equal(f.merge({ model: "gpt-6.1-sol" }), false);
+  assert.equal(fs.readFileSync(f.modelsPath, "utf8"), bytes);
+});
+
+test("reordered agent keys still count as unedited", (t) => {
+  const old = { model: "old-model", options: { a: 1, z: [{ a: true, b: false }] } };
+  const f = modelsFixture(t, { "code-reviewer": {
+    __hash__: agentDefaultsHash(old), __module__: "do",
+    options: { z: [{ b: false, a: true }], a: 1 }, model: "old-model",
+  } });
+  assert.equal(f.merge(old), false);
+  const cfg = { model: "gpt-6.1-sol" };
+  assert.equal(f.merge(cfg), true);
+  assert.deepEqual(f.read().agents["code-reviewer"], {
+    ...cfg, __module__: "do", __hash__: agentDefaultsHash(cfg),
+  });
+});
+
+for (const existing of [null, false, "invalid", 42, []]) {
+  test("non-object agent " + JSON.stringify(existing) + " is replaced", (t) => {
+    const f = modelsFixture(t, { "code-reviewer": existing });
+    const cfg = { model: "gpt-6.1-sol" };
+    assert.equal(f.merge(cfg), true);
+    assert.deepEqual(f.read().agents["code-reviewer"], {
+      ...cfg, __module__: "do", __hash__: agentDefaultsHash(cfg),
+    });
+  });
 }
 
 function foreignHooks() {
