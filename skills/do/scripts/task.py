@@ -10,6 +10,7 @@ Commands:
   status                      - Show current task status
   update-phase <N>            - Update current phase
   set-verify <command>        - Update current verification command
+  worktree                    - Attach a worktree to the current task
 """
 
 from __future__ import annotations
@@ -131,7 +132,7 @@ def write_task_md(task_md_path: str, frontmatter: dict, body: str) -> bool:
         return False
 
 
-def create_worktree(project_root: str, task_id: str) -> str:
+def create_worktree(project_root: str, task_id: str, worktree_dir: str = "") -> str:
     """Create a git worktree for the task. Returns the worktree directory path."""
     # Get git root
     result = subprocess.run(
@@ -144,19 +145,33 @@ def create_worktree(project_root: str, task_id: str) -> str:
     git_root = result.stdout.strip()
 
     # Calculate paths
-    worktree_dir = os.path.join(git_root, ".worktrees", f"do-{task_id}")
+    worktree_dir = worktree_dir or os.path.join(git_root, ".worktrees", f"do-{task_id}")
     branch_name = f"do/{task_id}"
 
-    # Create worktree with new branch
+    branch = subprocess.run(
+        ["git", "-C", git_root, "show-ref", "--verify", "--quiet", f"refs/heads/{branch_name}"],
+        capture_output=True, text=True,
+    )
+    if branch.returncode == 0:
+        pruned = subprocess.run(
+            ["git", "-C", git_root, "worktree", "prune"],
+            capture_output=True, text=True,
+        )
+        if pruned.returncode != 0:
+            raise RuntimeError(f"Failed to prune worktrees: {pruned.stderr}")
+        arguments = [worktree_dir, branch_name]
+    else:
+        arguments = ["-b", branch_name, worktree_dir]
+
     result = subprocess.run(
-        ["git", "-C", git_root, "worktree", "add", "-b", branch_name, worktree_dir],
+        ["git", "-C", git_root, "worktree", "add", *arguments],
         capture_output=True,
         text=True,
     )
     if result.returncode != 0:
         raise RuntimeError(f"Failed to create worktree: {result.stderr}")
 
-    return worktree_dir
+    return Path(worktree_dir).as_posix()
 
 
 def resolve_verify_command(project_root: str, verify_command: str | None) -> str:
@@ -268,6 +283,36 @@ def load_task(project_root: str) -> tuple[str, dict, str] | None:
     return task_md_path, parsed["frontmatter"], parsed["body"]
 
 
+def attach_worktree() -> bool:
+    """Attach a worktree without replacing the current task or its state."""
+    project_root = get_project_root()
+    loaded = load_task(project_root)
+    if not loaded:
+        print("Error: No active task or unreadable task.md.", file=sys.stderr)
+        return False
+    task_md_path, frontmatter, body = loaded
+    task_id = frontmatter.get("id")
+    if not isinstance(task_id, str) or not task_id.strip():
+        print("Error: task.md frontmatter must contain a non-empty id.", file=sys.stderr)
+        return False
+    worktree_dir = frontmatter.get("worktree_dir", "")
+    if worktree_dir and Path(worktree_dir).is_dir():
+        print(f"export DO_WORKTREE_DIR={Path(worktree_dir).as_posix()}")
+        return True
+    try:
+        worktree_dir = create_worktree(project_root, task_id, worktree_dir)
+    except (OSError, RuntimeError) as error:
+        print(f"Error: {error}", file=sys.stderr)
+        return False
+    frontmatter["use_worktree"] = True
+    frontmatter["worktree_dir"] = worktree_dir
+    if not write_task_md(task_md_path, frontmatter, body):
+        print("Error: Failed to write task.md.", file=sys.stderr)
+        return False
+    print(f"export DO_WORKTREE_DIR={Path(worktree_dir).as_posix()}")
+    return True
+
+
 def resolve_task_dir(project_root: str, task_dir: str) -> str:
     """Accept task IDs, project-relative paths, and absolute task paths."""
     task_dir = os.path.normpath(task_dir)
@@ -347,7 +392,10 @@ def list_tasks() -> list[dict]:
 
         relative_path = os.path.join(DIR_TASKS, entry)
         task_data["path"] = relative_path
-        task_data["is_current"] = current_task == relative_path
+        task_data["is_current"] = bool(current_task) and (
+            os.path.normcase(os.path.normpath(current_task))
+            == os.path.normcase(os.path.normpath(relative_path))
+        )
         tasks.append(task_data)
 
     return tasks
@@ -452,6 +500,7 @@ def main():
 
     # status command
     subparsers.add_parser("status", help="Show current task status")
+    subparsers.add_parser("worktree", help="Attach a worktree to the current task")
 
     # update-phase command
     phase_parser = subparsers.add_parser("update-phase", help="Update current phase")
@@ -465,14 +514,14 @@ def main():
     if args.command == "create":
         title = " ".join(args.title)
         result = create_task(title, args.worktree)
-        print(f"Created task: {result['relative_path']}")
+        print(f"Created task: {Path(result['relative_path']).as_posix()}")
         print(f"Task ID: {result['task_data']['id']}")
         print(f"Phase: 1/{result['task_data']['max_phases']} (Understand)")
         print(f"Worktree: {result['task_data']['use_worktree']}")
 
     elif args.command == "start":
         if start_task(args.task_dir):
-            print(f"Started task: {args.task_dir}")
+            print(f"Started task: {Path(args.task_dir).as_posix()}")
         else:
             sys.exit(1)
 
@@ -495,7 +544,11 @@ def main():
             print(f"Status: {status.get('status', 'unknown')}")
             print(f"Phase: {status.get('current_phase', '?')}/{status.get('max_phases', 5)}")
             print(f"Worktree: {status.get('use_worktree', False)}")
-            print(f"Path: {status['path']}")
+            print(f"Path: {Path(status['path']).as_posix()}")
+
+    elif args.command == "worktree":
+        if not attach_worktree():
+            sys.exit(1)
 
     elif args.command == "update-phase":
         if update_phase(args.phase):

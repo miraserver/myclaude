@@ -1,7 +1,10 @@
+from __future__ import annotations
+
 import base64
 import json
 import os
 import shlex
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -35,7 +38,16 @@ class DoHookTests(unittest.TestCase):
         project_patcher.start()
         self.addCleanup(project_patcher.stop)
         self.environment = os.environ.copy()
-        self.environment["CLAUDE_PROJECT_DIR"] = str(self.project)
+        self.environment.pop("CLAUDE_PROJECT_DIR", None)
+        for arguments in (
+            ["init"],
+            ["-c", "user.name=Do Test", "-c", "user.email=do@example.test",
+             "-c", "commit.gpgsign=false", "commit", "--allow-empty", "-m", "test root"],
+        ):
+            subprocess.run(
+                ["git", *arguments], cwd=self.project, env=self.environment,
+                check=True, capture_output=True, text=True,
+            )
         self.session_id = "session-a"
 
     def tearDown(self):
@@ -361,6 +373,163 @@ class DoHookTests(unittest.TestCase):
         )
         self._stop_json()
         self.assertEqual(Path(output_file.read_text(encoding="utf-8")).resolve(), worktree.resolve())
+
+    def test_attach_worktree_preserves_task_and_is_idempotent(self):
+        current = self._create_task()
+        self._set_task(
+            current_phase=4, phase_name="Implement", max_phases=7,
+            verify_command=python_command("print('verified')"),
+            session_id=self.session_id, completion_promise="custom promise",
+        )
+        before, body = self._read_task()
+        pointer = Path(task.get_current_task_file(str(self.project)))
+        pointer_bytes = pointer.read_bytes()
+        first = self._task_cli("worktree")
+        self.assertEqual(first.returncode, 0, first.stderr)
+        after, after_body = self._read_task(current)
+        worktree = self.project / ".worktrees" / ("do-" + before["id"])
+        self.assertTrue(worktree.is_dir())
+        self.assertEqual(after, dict(before, use_worktree=True, worktree_dir=worktree.as_posix()))
+        self.assertEqual(body, after_body)
+        self.assertEqual(pointer.read_bytes(), pointer_bytes)
+        metadata_bytes = (current / "task.md").read_bytes()
+        second = self._task_cli("worktree")
+        self.assertEqual(second.returncode, 0, second.stderr)
+        self.assertEqual(first.stdout, second.stdout)
+        self.assertEqual(first.stdout.strip(), "export DO_WORKTREE_DIR=" + worktree.as_posix())
+        self.assertNotIn("\\", first.stdout)
+        self.assertEqual((current / "task.md").read_bytes(), metadata_bytes)
+        self.assertEqual(pointer.read_bytes(), pointer_bytes)
+        self.assertEqual(list((self.project / ".worktrees").iterdir()), [worktree])
+        self.assertEqual([p for p in current.parent.iterdir() if p.is_dir()], [current])
+        listing = subprocess.run(
+            ["git", "worktree", "list", "--porcelain"], cwd=self.project,
+            env=self.environment, capture_output=True, text=True, check=True,
+        )
+        self.assertEqual(listing.stdout.count("worktree "), 2)
+        self.assertIn("branch refs/heads/do/" + before["id"], listing.stdout)
+
+    def test_attach_recreates_missing_worktree_on_existing_branch(self):
+        self._create_task()
+        attached = self._task_cli("worktree")
+        self.assertEqual(attached.returncode, 0, attached.stderr)
+        before, body = self._read_task()
+        worktree = Path(before["worktree_dir"])
+        subprocess.run(
+            ["git", "-c", "user.name=Do Test", "-c", "user.email=do@example.test",
+             "-c", "commit.gpgsign=false", "commit", "--allow-empty", "-m", "branch progress"],
+            cwd=worktree, env=self.environment, capture_output=True, text=True, check=True,
+        )
+        tip = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=worktree, env=self.environment,
+            capture_output=True, text=True, check=True,
+        ).stdout.strip()
+        self.assertIn(self.project.resolve(), worktree.resolve().parents)
+        shutil.rmtree(worktree)
+        result = self._task_cli("worktree")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(worktree.is_dir())
+        self.assertEqual(self._read_task(), (before, body))
+        restored = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=worktree, env=self.environment,
+            capture_output=True, text=True, check=True,
+        )
+        self.assertEqual(restored.stdout.strip(), tip)
+        self.assertEqual(result.stdout, attached.stdout)
+
+    def test_attach_missing_recorded_directory_creates_missing_branch(self):
+        self._create_task()
+        worktree = self.project / "custom-worktree"
+        self._set_task(worktree_dir=worktree.as_posix())
+        result = self._task_cli("worktree")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(worktree.is_dir())
+        self.assertEqual(self._read_task()[0]["worktree_dir"], worktree.as_posix())
+
+    def test_attach_requires_nonempty_frontmatter_id(self):
+        current = self._create_task()
+        original, body = self._read_task()
+        for value in (None, "", "   "):
+            with self.subTest(value=value):
+                metadata = dict(original)
+                if value is None:
+                    metadata.pop("id")
+                else:
+                    metadata["id"] = value
+                self._write_task(metadata, body, current)
+                result = self._task_cli("worktree")
+                self.assertEqual(result.returncode, 1)
+                self.assertIn("non-empty id", result.stderr)
+                self.assertNotIn("Traceback", result.stderr)
+                self.assertFalse((self.project / ".worktrees").exists())
+                self.assertEqual(self._read_task(), (metadata, body))
+
+    def test_attach_without_current_task_fails(self):
+        result = self._task_cli("worktree")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("No active task", result.stderr)
+        self.assertNotIn("export ", result.stdout)
+
+    def test_attach_in_non_git_directory_fails_without_changing_task(self):
+        self._create_task()
+        before, body = self._read_task()
+        # Hide only this temporary repository's metadata for the failure case.
+        (self.project / ".git").rename(self.project / "git-metadata")
+        result = self._task_cli("worktree")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("Not a git repository", result.stderr)
+        self.assertEqual(self._read_task(), (before, body))
+        self.assertFalse((self.project / ".worktrees").exists())
+
+    def test_stop_verification_runs_in_attached_worktree(self):
+        self._create_task()
+        self._set_task(verify_command=python_command(
+            "from pathlib import Path;Path('attached-verification.txt').write_text(str(Path.cwd()))"
+        ), session_id=self.session_id)
+        attached = self._task_cli("worktree")
+        self.assertEqual(attached.returncode, 0, attached.stderr)
+        frontmatter, _ = self._read_task()
+        worktree = Path(frontmatter["worktree_dir"])
+        self.assertEqual(self._task_cli("update-phase", "5").returncode, 0)
+        result, output = self._stop_json()
+        self.assertEqual(output, {}, result.stderr)
+        marker = worktree / "attached-verification.txt"
+        self.assertEqual(Path(marker.read_text()).resolve(), worktree.resolve())
+        self.assertFalse((self.project / marker.name).exists())
+        self.assertEqual(self._read_task()[0]["status"], "completed")
+
+    def test_setup_worktree_exports_and_cli_paths_use_forward_slashes(self):
+        result = self._setup("--worktree", "new worktree task")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        exports = [line for line in result.stdout.splitlines() if line.startswith("export ")]
+        self.assertEqual(len(exports), 2)
+        self.assertTrue(all("\\" not in line for line in exports))
+        self.assertNotIn("\\", result.stdout)
+        frontmatter, _ = self._read_task()
+        self.assertTrue(frontmatter["use_worktree"])
+        self.assertTrue(Path(frontmatter["worktree_dir"]).is_dir())
+        status = self._task_cli("status")
+        self.assertEqual(status.returncode, 0, status.stderr)
+        self.assertNotIn("\\", status.stdout)
+        current = self._current_task_dir()
+        started = self._task_cli("start", str(current))
+        self.assertEqual(started.returncode, 0, started.stderr)
+        self.assertNotIn("\\", started.stdout)
+        created = self._task_cli("create", "another task")
+        self.assertEqual(created.returncode, 0, created.stderr)
+        self.assertNotIn("\\", created.stdout)
+
+    def test_list_marks_current_task_with_mixed_path_separators(self):
+        current = self._create_task()
+        pointer = Path(task.get_current_task_file(str(self.project)))
+        relative = current.relative_to(self.project)
+        # On Windows this differs from os.path.join(DIR_TASKS, id).
+        pointer.write_text(str(relative), encoding="utf-8")
+        result = self._task_cli("list")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("* " + current.name + " [in_progress]", result.stdout)
+        pointer.write_text(relative.as_posix(), encoding="utf-8")
+        self.assertIn("* " + current.name, self._task_cli("list").stdout)
 
     def test_setup_verify_round_trips_exact_command(self):
         command = 'pnpm typecheck && echo "url:http://example.test/a:b"'

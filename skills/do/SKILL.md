@@ -49,15 +49,15 @@ When the phase reaches its maximum, the Stop hook runs `verify_command`. It bloc
 
 The worktree is created **only when needed** (right before Phase 4: Implement). If the user chooses worktree mode:
 
-1. Run setup with `--worktree` flag to create the worktree:
+1. Attach a worktree to the current task, preserving its phase and verification settings:
    ```bash
-   python3 "$HOME/.claude/skills/do/scripts/setup-do.py" --worktree "<task description>"
+   python3 "$HOME/.claude/skills/do/scripts/task.py" worktree
    ```
 
 2. Use the `DO_WORKTREE_DIR` environment variable to direct `codeagent-wrapper` develop agent into the worktree. **Do NOT pass `--worktree` to subsequent calls** — that creates a new worktree each time.
 
 ```bash
-# Save the worktree path from setup output, then prefix all develop calls:
+# Save the worktree path from task.py output, then prefix all develop calls:
 DO_WORKTREE_DIR=<worktree_dir> codeagent-wrapper --agent develop - . <<'EOF'
 ...
 EOF
@@ -190,7 +190,7 @@ Develop in a separate worktree? (Isolates changes from main branch)
 
 If user chooses worktree:
 ```bash
-python3 "$HOME/.claude/skills/do/scripts/setup-do.py" --worktree "<task description>"
+python3 "$HOME/.claude/skills/do/scripts/task.py" worktree
 # Save the worktree path from output for DO_WORKTREE_DIR
 ```
 

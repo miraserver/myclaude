@@ -8,8 +8,11 @@ Creates a task directory under .claude/do-tasks/ with:
 If --worktree is specified, also creates a git worktree for isolated development.
 """
 
+from __future__ import annotations
+
 import argparse
 import sys
+from pathlib import Path
 
 from task import create_task, PHASE_NAMES
 
@@ -49,17 +52,17 @@ def main():
     task_data = result["task_data"]
     worktree_dir = result.get("worktree_dir", "")
 
-    print(f"Initialized: {result['relative_path']}")
+    print(f"Initialized: {Path(result['relative_path']).as_posix()}")
     print(f"task_id: {task_data['id']}")
     print(f"phase: 1/{task_data['max_phases']} ({PHASE_NAMES[1]})")
     print(f"completion_promise: {task_data['completion_promise']}")
     print(f"use_worktree: {task_data['use_worktree']}")
     print(f"verify_command: {task_data['verify_command'] or '(none)'}")
-    print(f"export DO_TASK_DIR={result['relative_path']}")
+    print(f"export DO_TASK_DIR={Path(result['relative_path']).as_posix()}")
 
     if worktree_dir:
-        print(f"worktree_dir: {worktree_dir}")
-        print(f"export DO_WORKTREE_DIR={worktree_dir}")
+        print(f"worktree_dir: {Path(worktree_dir).as_posix()}")
+        print(f"export DO_WORKTREE_DIR={Path(worktree_dir).as_posix()}")
 
 
 if __name__ == "__main__":

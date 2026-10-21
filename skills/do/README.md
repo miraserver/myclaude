@@ -206,26 +206,25 @@ python install.py --uninstall --module do
 
 ## Worktree Mode
 
-Use `--worktree` to execute tasks in an isolated git worktree, preventing changes to your main branch:
+At Phase 4, attach an isolated git worktree to the current task:
 
 ```bash
-codeagent-wrapper --worktree --agent develop "implement feature X" .
+python3 "$HOME/.claude/skills/do/scripts/task.py" worktree
 ```
 
-This automatically:
-1. Generates a unique task ID (format: `YYYYMMDD-xxxxxx`)
-2. Creates a new worktree at `.worktrees/do-{task_id}/`
-3. Creates a new branch `do/{task_id}`
-4. Executes the task in the isolated worktree
+This reuses the current task ID to create `.worktrees/do-{task_id}/` on branch
+`do/{task_id}`. It preserves the phase, verification command, session, status,
+completion promise, and current task pointer. Repeating the command reuses the
+existing worktree.
 
-Output includes: `Using worktree: .worktrees/do-{task_id}/ (task_id: {id}, branch: do/{id})`
+Copy the printed `export DO_WORKTREE_DIR=<path>` line into your shell, then direct
+develop calls to that worktree (paths are printed with forward slashes):
 
-In parallel mode, add `worktree: true` to task blocks:
+```bash
+DO_WORKTREE_DIR="<path>" codeagent-wrapper --agent develop "implement feature X" .
 ```
----TASK---
-id: feature_impl
-agent: develop
-worktree: true
----CONTENT---
-Implement the feature
-```
+
+Use the same `DO_WORKTREE_DIR` prefix for parallel develop calls. The Stop hook
+also runs verification in the attached worktree. To start a **new** task in
+worktree mode instead, `setup-do.py --worktree "<task description>"` remains
+available; do not rerun setup to attach a worktree to an existing task.
