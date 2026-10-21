@@ -7,6 +7,6 @@
 __pycache__
 .coverage
 coverage.out
-references
-output/
+/references
+/output/
 .worktrees/
