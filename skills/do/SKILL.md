@@ -13,7 +13,12 @@ An orchestrator for systematic feature development. Invoke agents via `codeagent
 When triggered via `/do <task>`, initialize the task directory immediately without asking about worktree:
 
 ```bash
-python3 "$HOME/.claude/skills/do/scripts/setup-do.py" "<task description>"
+python3 "$HOME/.claude/skills/do/scripts/setup-do.py" --verify "<cmd>" "<task description>"
+```
+
+When `--verify` is omitted, the project default is `.claude/do.json`:
+```json
+{"verify_command": "pnpm typecheck && pnpm test"}
 ```
 
 This creates a task directory under `.claude/do-tasks/` with:
@@ -35,6 +40,10 @@ python3 "$HOME/.claude/skills/do/scripts/task.py" status
 # List all tasks
 python3 "$HOME/.claude/skills/do/scripts/task.py" list
 ```
+
+## Verification Gate
+
+When the phase reaches its maximum, the Stop hook runs `verify_command`. It blocks for up to five attempts with failing output and marks the task completed when verification passes. The task binds to the session that first stops; abandon it with `task.py finish`, and change the command with `set-verify`.
 
 ## Worktree Mode
 
@@ -285,6 +294,11 @@ Write completion summary:
 - How to verify (commands)
 - Follow-ups (optional)
 EOF
+```
+
+Before printing the completion promise, run:
+```bash
+python3 "$HOME/.claude/skills/do/scripts/task.py" update-phase 5
 ```
 
 Output the completion signal:

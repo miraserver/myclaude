@@ -30,6 +30,7 @@ def main():
         help="Default: <promise>DO_COMPLETE</promise>",
     )
     parser.add_argument("--worktree", action="store_true", help="Enable worktree mode")
+    parser.add_argument("--verify", help="Shell command to verify task completion")
     parser.add_argument("prompt", nargs="+", help="Task description")
     args = parser.parse_args()
 
@@ -37,7 +38,13 @@ def main():
         die("--max-phases must be a positive integer")
 
     prompt = " ".join(args.prompt)
-    result = create_task(title=prompt, use_worktree=args.worktree)
+    result = create_task(
+        title=prompt,
+        use_worktree=args.worktree,
+        verify_command=args.verify,
+        max_phases=args.max_phases,
+        completion_promise=args.completion_promise,
+    )
 
     task_data = result["task_data"]
     worktree_dir = result.get("worktree_dir", "")
@@ -47,6 +54,7 @@ def main():
     print(f"phase: 1/{task_data['max_phases']} ({PHASE_NAMES[1]})")
     print(f"completion_promise: {task_data['completion_promise']}")
     print(f"use_worktree: {task_data['use_worktree']}")
+    print(f"verify_command: {task_data['verify_command'] or '(none)'}")
     print(f"export DO_TASK_DIR={result['relative_path']}")
 
     if worktree_dir:

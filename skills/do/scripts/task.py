@@ -9,9 +9,13 @@ Commands:
   list                        - List active tasks
   status                      - Show current task status
   update-phase <N>            - Update current phase
+  set-verify <command>        - Update current verification command
 """
 
+from __future__ import annotations
+
 import argparse
+import json
 import os
 import random
 import re
@@ -37,7 +41,7 @@ PHASE_NAMES = {
 
 def get_project_root() -> str:
     """Get project root from env or cwd."""
-    return os.environ.get("CLAUDE_PROJECT_DIR", os.getcwd())
+    return os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd()
 
 
 def get_tasks_dir(project_root: str) -> str:
@@ -55,6 +59,20 @@ def generate_task_id() -> str:
     date_part = datetime.now().strftime("%m%d")
     random_part = ''.join(random.choices(string.ascii_lowercase + string.digits, k=4))
     return f"{date_part}-{random_part}"
+
+
+def parse_frontmatter_value(value: str):
+    """Parse JSON-quoted strings and legacy frontmatter scalars."""
+    if value.startswith('"'):
+        try:
+            return json.loads(value)
+        except ValueError:
+            return value[1:-1] if value.endswith('"') else value[1:]
+    if value in ("true", "false"):
+        return value == "true"
+    if re.fullmatch(r"-?\d+", value):
+        return int(value)
+    return value
 
 
 def read_task_md(task_md_path: str) -> dict | None:
@@ -76,46 +94,38 @@ def read_task_md(task_md_path: str) -> dict | None:
     frontmatter_str = match.group(1)
     body = match.group(2)
 
-    # Simple YAML parsing (no external deps)
     frontmatter = {}
     for line in frontmatter_str.split('\n'):
-        if ':' in line:
-            key, value = line.split(':', 1)
-            key = key.strip()
-            value = value.strip()
-            # Handle quoted strings
-            if value.startswith('"') and value.endswith('"'):
-                value = value[1:-1]
-            elif value == 'true':
-                value = True
-            elif value == 'false':
-                value = False
-            elif value.isdigit():
-                value = int(value)
-            frontmatter[key] = value
+        if ':' not in line:
+            continue
+        key, value = line.split(':', 1)
+        frontmatter[key.strip()] = parse_frontmatter_value(value.strip())
 
     return {"frontmatter": frontmatter, "body": body}
 
 
-def write_task_md(task_md_path: str, frontmatter: dict, body: str) -> bool:
-    """Write task.md with YAML frontmatter + body."""
-    try:
-        lines = ["---"]
-        for key, value in frontmatter.items():
-            if isinstance(value, bool):
-                lines.append(f"{key}: {str(value).lower()}")
-            elif isinstance(value, int):
-                lines.append(f"{key}: {value}")
-            elif isinstance(value, str) and ('<' in value or '>' in value or ':' in value):
-                lines.append(f'{key}: "{value}"')
-            else:
-                lines.append(f'{key}: "{value}"' if isinstance(value, str) else f"{key}: {value}")
-        lines.append("---")
-        lines.append("")
-        lines.append(body)
+def format_frontmatter_value(value) -> str:
+    """Serialize frontmatter strings without losing shell command quoting."""
+    if isinstance(value, str):
+        return json.dumps(value, ensure_ascii=False)
+    if isinstance(value, bool):
+        return str(value).lower()
+    return str(value)
 
-        with open(task_md_path, "w", encoding="utf-8") as f:
-            f.write('\n'.join(lines))
+
+def save_task(task_md_path: str, frontmatter: dict, body: str) -> None:
+    """Save task metadata and the unchanged Markdown body, raising on failure."""
+    lines = ["---"]
+    lines.extend(f"{key}: {format_frontmatter_value(value)}" for key, value in frontmatter.items())
+    lines.append("---")
+    with open(task_md_path, "w", encoding="utf-8") as task_file:
+        task_file.write("\n".join(lines) + "\n" + body)
+
+
+def write_task_md(task_md_path: str, frontmatter: dict, body: str) -> bool:
+    """Write task.md, retaining the legacy boolean success API."""
+    try:
+        save_task(task_md_path, frontmatter, body)
         return True
     except Exception:
         return False
@@ -149,7 +159,29 @@ def create_worktree(project_root: str, task_id: str) -> str:
     return worktree_dir
 
 
-def create_task(title: str, use_worktree: bool = False) -> dict:
+def resolve_verify_command(project_root: str, verify_command: str | None) -> str:
+    """Resolve an explicit command before the optional project configuration."""
+    if isinstance(verify_command, str) and verify_command.strip():
+        return verify_command
+    config_path = os.path.join(project_root, ".claude", "do.json")
+    try:
+        with open(config_path, "r", encoding="utf-8") as config_file:
+            config = json.load(config_file)
+    except (OSError, ValueError):
+        return ""
+    if not isinstance(config, dict):
+        return ""
+    command = config.get("verify_command", "")
+    return command if isinstance(command, str) else ""
+
+
+def create_task(
+    title: str,
+    use_worktree: bool = False,
+    verify_command: str | None = None,
+    max_phases: int = 5,
+    completion_promise: str = "<promise>DO_COMPLETE</promise>",
+) -> dict:
     """Create a new task directory with task.md."""
     project_root = get_project_root()
     tasks_dir = get_tasks_dir(project_root)
@@ -175,14 +207,17 @@ def create_task(title: str, use_worktree: bool = False) -> dict:
         "status": "in_progress",
         "current_phase": 1,
         "phase_name": PHASE_NAMES[1],
-        "max_phases": 5,
+        "max_phases": max_phases,
         "use_worktree": use_worktree,
         "worktree_dir": worktree_dir,
         "created_at": datetime.now().isoformat(),
-        "completion_promise": "<promise>DO_COMPLETE</promise>",
+        "completion_promise": completion_promise,
+        "verify_command": resolve_verify_command(project_root, verify_command),
+        "session_id": "",
     }
 
-    body = f"""# Requirements
+    body = f"""
+# Requirements
 
 {title}
 
@@ -192,7 +227,7 @@ def create_task(title: str, use_worktree: bool = False) -> dict:
 """
 
     task_md_path = os.path.join(task_dir, FILE_TASK_MD)
-    write_task_md(task_md_path, frontmatter, body)
+    save_task(task_md_path, frontmatter, body)
 
     current_task_file = get_current_task_file(project_root)
     relative_task_dir = os.path.relpath(task_dir, project_root)
@@ -221,24 +256,47 @@ def get_current_task(project_root: str) -> str | None:
         return None
 
 
+def load_task(project_root: str) -> tuple[str, dict, str] | None:
+    """Load the current task's path, frontmatter, and Markdown body."""
+    current_task = get_current_task(project_root)
+    if not current_task:
+        return None
+    task_md_path = os.path.join(project_root, current_task, FILE_TASK_MD)
+    parsed = read_task_md(task_md_path)
+    if not parsed:
+        return None
+    return task_md_path, parsed["frontmatter"], parsed["body"]
+
+
+def resolve_task_dir(project_root: str, task_dir: str) -> str:
+    """Accept task IDs, project-relative paths, and absolute task paths."""
+    task_dir = os.path.normpath(task_dir)
+    if os.path.isabs(task_dir):
+        return task_dir
+    tasks_prefix = os.path.normpath(DIR_TASKS) + os.sep
+    if task_dir.startswith(tasks_prefix):
+        return os.path.join(project_root, task_dir)
+    return os.path.join(get_tasks_dir(project_root), task_dir)
+
+
 def start_task(task_dir: str) -> bool:
     """Set current task pointer."""
     project_root = get_project_root()
-    tasks_dir = get_tasks_dir(project_root)
-
-    if os.path.isabs(task_dir):
-        full_path = task_dir
-        relative_path = os.path.relpath(task_dir, project_root)
-    else:
-        if not task_dir.startswith(DIR_TASKS):
-            full_path = os.path.join(tasks_dir, task_dir)
-            relative_path = os.path.join(DIR_TASKS, task_dir)
-        else:
-            full_path = os.path.join(project_root, task_dir)
-            relative_path = task_dir
+    full_path = resolve_task_dir(project_root, task_dir)
+    relative_path = os.path.relpath(full_path, project_root)
 
     if not os.path.exists(full_path):
         print(f"Error: Task directory not found: {full_path}", file=sys.stderr)
+        return False
+
+    task_md_path = os.path.join(full_path, FILE_TASK_MD)
+    parsed = read_task_md(task_md_path)
+    if not parsed:
+        print("Error: task.md not found or invalid.", file=sys.stderr)
+        return False
+    parsed["frontmatter"]["session_id"] = ""
+    if not write_task_md(task_md_path, parsed["frontmatter"], parsed["body"]):
+        print("Error: Failed to write task.md.", file=sys.stderr)
         return False
 
     current_task_file = get_current_task_file(project_root)
@@ -343,6 +401,34 @@ def update_phase(phase: int) -> bool:
     return True
 
 
+def set_verify(command: str) -> bool:
+    """Set or explicitly clear the current task's verification command."""
+    loaded = load_task(get_project_root())
+    if not loaded:
+        print("Error: No active task or unreadable task.md.", file=sys.stderr)
+        return False
+    task_md_path, frontmatter, body = loaded
+    frontmatter["verify_command"] = command
+    if not write_task_md(task_md_path, frontmatter, body):
+        print("Error: Failed to write task.md.", file=sys.stderr)
+        return False
+    return True
+
+
+def print_tasks(tasks: list[dict]) -> None:
+    """Print tasks in their supplied order using the existing CLI format."""
+    if not tasks:
+        print("No tasks found.")
+        return
+    for task in tasks:
+        marker = "* " if task.get("is_current") else "  "
+        phase = task.get("current_phase", "?")
+        max_phase = task.get("max_phases", 5)
+        status = task.get("status", "unknown")
+        print(f"{marker}{task['id']} [{status}] phase {phase}/{max_phase}")
+        print(f"    {task.get('title', 'No title')}")
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Task directory management for do skill workflow"
@@ -371,6 +457,9 @@ def main():
     phase_parser = subparsers.add_parser("update-phase", help="Update current phase")
     phase_parser.add_argument("phase", type=int, help="Phase number (1-5)")
 
+    verify_parser = subparsers.add_parser("set-verify", help="Set verification command")
+    verify_parser.add_argument("verify_command", help="Shell command; empty string clears verification")
+
     args = parser.parse_args()
 
     if args.command == "create":
@@ -394,17 +483,7 @@ def main():
             sys.exit(1)
 
     elif args.command == "list":
-        tasks = list_tasks()
-        if not tasks:
-            print("No tasks found.")
-        else:
-            for task in tasks:
-                marker = "* " if task.get("is_current") else "  "
-                phase = task.get("current_phase", "?")
-                max_phase = task.get("max_phases", 5)
-                status = task.get("status", "unknown")
-                print(f"{marker}{task['id']} [{status}] phase {phase}/{max_phase}")
-                print(f"    {task.get('title', 'No title')}")
+        print_tasks(list_tasks())
 
     elif args.command == "status":
         status = get_status()
@@ -424,6 +503,11 @@ def main():
             print(f"Updated to phase {args.phase} ({phase_name})")
         else:
             sys.exit(1)
+
+    elif args.command == "set-verify":
+        if not set_verify(args.verify_command):
+            sys.exit(1)
+        print(f"Verification command: {args.verify_command or '(none)'}")
 
     else:
         parser.print_help()

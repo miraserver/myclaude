@@ -52,7 +52,7 @@ To customize agents, create same-named files in `~/.codeagent/agents/` to overri
 3. **Phase 4 requires approval** - stop after Phase 3 if not approved
 4. **Pass complete context forward** - every agent gets the Context Pack
 5. **Parallel-first** - run independent tasks via `codeagent-wrapper --parallel`
-6. **Update state after each phase** - keep `.claude/do-tasks/{task_id}/task.json` current
+6. **Update state after each phase** - keep `.claude/do-tasks/{task_id}/task.md` current
 
 ## Context Pack Template
 
@@ -124,6 +124,8 @@ A Stop hook is registered after installation:
 4. Outputs `<promise>DO_COMPLETE</promise>` when finished
 
 Manual exit: Edit `task.md` and set `status: "cancelled"` in the frontmatter.
+
+Set `verify_command` with `setup-do.py --verify "<cmd>"` or the project default in `.claude/do.json`; change it later with `task.py set-verify "<cmd>"`. Tasks bind to the session that first stops. At the maximum phase, the Stop hook runs verification, blocks up to five times with failing output, and marks completed on success. Abandon with `task.py finish`.
 
 ## Parallel Execution Examples
 
