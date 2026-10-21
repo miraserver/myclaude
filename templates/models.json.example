@@ -12,7 +12,8 @@
       "backend": "codex",
       "model": "gpt-6.1-sol",
       "reasoning": "xhigh",
-      "yolo": true
+      "yolo": true,
+      "prompt_file": "~/.claude/skills/omo/references/develop.md"
     },
     "code-explorer": {
       "backend": "claude",
@@ -30,25 +31,30 @@
     "oracle": {
       "backend": "claude",
       "model": "claude-opus-5-5",
-      "yolo": true
+      "yolo": true,
+      "prompt_file": "~/.claude/skills/omo/references/oracle.md"
     },
     "librarian": {
       "backend": "codex",
       "model": "gpt-6.1-sol",
       "reasoning": "xhigh",
-      "yolo": true
+      "yolo": true,
+      "prompt_file": "~/.claude/skills/omo/references/librarian.md"
     },
     "explore": {
       "backend": "claude",
-      "model": "claude-sonnet-5-5"
+      "model": "claude-sonnet-5-5",
+      "prompt_file": "~/.claude/skills/omo/references/explore.md"
     },
     "frontend-ui-ux-engineer": {
       "backend": "claude",
-      "model": "claude-opus-5-5"
+      "model": "claude-opus-5-5",
+      "prompt_file": "~/.claude/skills/omo/references/frontend-ui-ux-engineer.md"
     },
     "document-writer": {
       "backend": "gemini",
-      "model": "gemini-3-flash-preview"
+      "model": "gemini-3-flash-preview",
+      "prompt_file": "~/.claude/skills/omo/references/document-writer.md"
     }
   }
 }
