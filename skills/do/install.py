@@ -48,7 +48,8 @@ def add_hook(settings: dict) -> dict:
     hook_command = Path(HOOK_PATH).expanduser().as_posix()
     hook_entry = {
         "type": "command",
-        "command": f"python3 {hook_command}"
+        "command": f'python3 "{hook_command}"',
+        "timeout": 1800
     }
 
     if "hooks" not in settings:
@@ -62,7 +63,8 @@ def add_hook(settings: dict) -> dict:
         if "hooks" in item:
             for h in item["hooks"]:
                 if "stop-hook" in h.get("command", "") and "do" in h.get("command", ""):
-                    h["command"] = f"python3 {hook_command}"
+                    h["command"] = hook_entry["command"]
+                    h["timeout"] = hook_entry["timeout"]
                     return settings
 
     stop_hooks.append({"hooks": [hook_entry]})

@@ -12,6 +12,7 @@
     ".claude-plugin/",
     "agents/",
     "skills/",
+    "hooks/",
     "memorys/",
     "templates/",
     "codeagent-wrapper/",

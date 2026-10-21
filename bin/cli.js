@@ -29,6 +29,8 @@ function parseArgs(argv) {
     tag: null,
     module: null,
     yes: false,
+    offline: false,
+    skipWrapper: false,
   };
 
   let i = 0;
@@ -44,6 +46,8 @@ function parseArgs(argv) {
     else if (a === "--dry-run") out.dryRun = true;
     else if (a === "--list") out.list = true;
     else if (a === "--update") out.update = true;
+    else if (a === "--offline") out.offline = true;
+    else if (a === "--skip-wrapper") out.skipWrapper = true;
     else if (a === "--tag") out.tag = argv[++i];
     else if (a === "--module") out.module = argv[++i];
     else if (a === "-y" || a === "--yes") out.yes = true;
@@ -73,6 +77,8 @@ function printHelp() {
       "  --dry-run              Print actions only",
       "  --list                 List installable items and exit",
       "  --update               Update already installed modules",
+      "  --offline              Install/update from local package contents",
+      "  --skip-wrapper         Skip codeagent-wrapper install (or MYCLAUDE_SKIP_WRAPPER=1)",
       "  --tag <tag>            Install a specific GitHub tag",
       "  --module <names>       For uninstall: comma-separated module names",
       "  -y, --yes              For uninstall: skip confirmation prompt",
@@ -295,13 +301,50 @@ function deepEqual(a, b) {
   return false;
 }
 
-function hooksEqual(h1, h2) {
-  if (!isPlainObject(h1) || !isPlainObject(h2)) return false;
-  const a = { ...h1 };
-  const b = { ...h2 };
-  delete a.__module__;
-  delete b.__module__;
-  return deepEqual(a, b);
+function normalizeHookCommand(cmd) {
+  return cmd
+    .replace(/['"]/g, "")
+    .replace(/\\/g, "/")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase()
+    .replace(/^(python3|python|py -3)\s+/, "");
+}
+
+function hookEntryKey(entry) {
+  return JSON.stringify({
+    matcher: entry.matcher || "",
+    commands: (entry.hooks || []).map((h) => normalizeHookCommand(h.command || "")),
+  });
+}
+
+function entryPointsInto(entry, roots) {
+  const normalize = (s) => s.replace(/\\/g, "/").replace(/['"]/g, "").toLowerCase();
+  const normalizedRoots = roots.filter(Boolean).map((root) => normalize(root).replace(/\/+$/, "") + "/");
+  return (entry.hooks || []).some((h) => {
+    const command = normalize(h.command || "");
+    return normalizedRoots.some((root) => command.includes(root));
+  });
+}
+
+let pythonCommand;
+let skipWrapper = false;
+
+function resolvePythonCommand() {
+  if (process.env.MYCLAUDE_PYTHON) return process.env.MYCLAUDE_PYTHON;
+  if (pythonCommand) return pythonCommand;
+  if (process.platform !== "win32") return (pythonCommand = "python3");
+
+  for (const [cmd, ...rest] of [["python3"], ["python"], ["py", "-3"]]) {
+    const result = spawnSync(cmd, [...rest, "-c", "import sys"], {
+      stdio: "ignore",
+      windowsHide: true,
+      timeout: 10000,
+    });
+    if (result.status === 0) return (pythonCommand = [cmd, ...rest].join(" "));
+  }
+  process.stderr.write("Warning: no working Python interpreter found; using python3.\n");
+  return (pythonCommand = "python3");
 }
 
 function replaceHookVariables(obj, pluginRoot) {
@@ -320,11 +363,22 @@ function mergeHooksToSettings(moduleName, hooksConfig, installDir, pluginRoot) {
   const rawHooks = hooksConfig.hooks;
   if (!rawHooks || !isPlainObject(rawHooks)) return false;
 
-  const settings = loadSettings(installDir);
-  if (!settings.hooks || !isPlainObject(settings.hooks)) settings.hooks = {};
-
   const moduleHooks = pluginRoot ? replaceHookVariables(rawHooks, pluginRoot) : rawHooks;
-  let modified = false;
+  return mergeHookEntries(moduleName, moduleHooks, installDir, pluginRoot ? [pluginRoot] : []);
+}
+
+function mergeHookEntries(moduleName, moduleHooks, installDir, pluginRoots) {
+  const settings = loadSettings(installDir);
+  const before = JSON.stringify(settings.hooks);
+  if (!isPlainObject(settings.hooks)) settings.hooks = {};
+
+  for (const [hookType, entries] of Object.entries(settings.hooks)) {
+    if (!Array.isArray(entries)) continue;
+    settings.hooks[hookType] = entries.filter((entry) =>
+      !(entry && (entry.__module__ === moduleName ||
+        (!Object.prototype.hasOwnProperty.call(entry, "__module__") && entryPointsInto(entry, pluginRoots))))
+    );
+  }
 
   for (const [hookType, hookEntries] of Object.entries(moduleHooks)) {
     if (!Array.isArray(hookEntries)) continue;
@@ -332,52 +386,58 @@ function mergeHooksToSettings(moduleName, hooksConfig, installDir, pluginRoot) {
 
     for (const entry of hookEntries) {
       if (!isPlainObject(entry)) continue;
-      const entryCopy = { ...entry, __module__: moduleName };
-
-      let exists = false;
-      for (const existing of settings.hooks[hookType]) {
-        if (existing && existing.__module__ === moduleName && hooksEqual(existing, entryCopy)) {
-          exists = true;
-          break;
-        }
-      }
-      if (!exists) {
+      const entryCopy = {
+        ...entry,
+        hooks: (entry.hooks || []).map((h) => ({
+          ...h,
+          ...(typeof h.command === "string" && /^python3(?=\s)/.test(h.command)
+            ? { command: h.command.replace(/^python3(?=\s)/, () => resolvePythonCommand()) }
+            : {}),
+        })),
+        __module__: moduleName,
+      };
+      const key = hookEntryKey(entryCopy);
+      if (!settings.hooks[hookType].some((existing) => existing && hookEntryKey(existing) === key)) {
         settings.hooks[hookType].push(entryCopy);
-        modified = true;
       }
     }
   }
 
+  for (const [hookType, entries] of Object.entries(settings.hooks)) {
+    if (Array.isArray(entries) && !entries.length) delete settings.hooks[hookType];
+  }
+
+  const modified = before !== JSON.stringify(settings.hooks);
   if (modified) saveSettings(installDir, settings);
   return modified;
 }
 
-function unmergeHooksFromSettings(moduleName, installDir) {
+function unmergeHooksFromSettings(moduleName, installDir, pluginRoots = []) {
   const settings = loadSettings(installDir);
   if (!settings.hooks || !isPlainObject(settings.hooks)) return false;
 
-  let modified = false;
+  const before = JSON.stringify(settings.hooks);
   for (const hookType of Object.keys(settings.hooks)) {
     const entries = settings.hooks[hookType];
     if (!Array.isArray(entries)) continue;
-    const kept = entries.filter((e) => !(e && e.__module__ === moduleName));
-    if (kept.length !== entries.length) {
-      settings.hooks[hookType] = kept;
-      modified = true;
-    }
+    settings.hooks[hookType] = entries.filter((entry) =>
+      !(entry && (entry.__module__ === moduleName ||
+        (!Object.prototype.hasOwnProperty.call(entry, "__module__") && entryPointsInto(entry, pluginRoots))))
+    );
     if (!settings.hooks[hookType].length) {
       delete settings.hooks[hookType];
-      modified = true;
     }
   }
 
+  const modified = before !== JSON.stringify(settings.hooks);
   if (modified) saveSettings(installDir, settings);
   return modified;
 }
 
 function mergeModuleHooks(moduleName, mod, installDir) {
   const ops = Array.isArray(mod && mod.operations) ? mod.operations : [];
-  let merged = false;
+  const moduleHooks = {};
+  const pluginRoots = [];
 
   for (const op of ops) {
     if (!op || op.type !== "copy_dir") continue;
@@ -394,10 +454,19 @@ function mergeModuleHooks(moduleName, mod, installDir) {
     } catch {
       continue;
     }
-    if (mergeHooksToSettings(moduleName, hooksConfig, installDir, targetDir.replace(/\\/g, '/'))) merged = true;
+    if (!isPlainObject(hooksConfig.hooks)) continue;
+    const pluginRoot = targetDir.replace(/\\/g, "/");
+    pluginRoots.push(pluginRoot);
+    const hooks = replaceHookVariables(hooksConfig.hooks, pluginRoot);
+    for (const [hookType, entries] of Object.entries(hooks)) {
+      if (!Array.isArray(entries)) continue;
+      if (!moduleHooks[hookType]) moduleHooks[hookType] = [];
+      moduleHooks[hookType].push(...entries);
+    }
   }
 
-  return merged;
+  if (!pluginRoots.length) return false;
+  return mergeHookEntries(moduleName, moduleHooks, installDir, pluginRoots);
 }
 
 async function dirExists(p) {
@@ -763,6 +832,10 @@ async function mergeDir(src, installDir, force) {
 }
 
 function runInstallSh(repoRoot, installDir, tag) {
+  if (skipWrapper || process.env.MYCLAUDE_SKIP_WRAPPER === "1") {
+    process.stdout.write("Skipping codeagent-wrapper install.\n");
+    return Promise.resolve();
+  }
   return new Promise((resolve, reject) => {
     const cmd = process.platform === "win32" ? "cmd.exe" : "bash";
     const args = process.platform === "win32" ? ["/c", "install.bat"] : ["install.sh"];
@@ -1007,7 +1080,10 @@ async function uninstallModule(moduleName, config, repoRoot, installDir, dryRun)
   }
 
   if (dryRun) return;
-  unmergeHooksFromSettings(moduleName, installDir);
+  const pluginRoots = ops
+    .filter((op) => op && op.type === "copy_dir" && typeof op.target === "string" && op.target)
+    .map((op) => path.resolve(installDir, op.target).replace(/\\/g, "/"));
+  unmergeHooksFromSettings(moduleName, installDir, pluginRoots);
   deleteModuleStatus(installDir, moduleName);
 }
 
@@ -1152,6 +1228,7 @@ async function installSelected(picks, tag, config, installDir, force, dryRun) {
 
 async function main() {
   const args = parseArgs(process.argv.slice(2));
+  skipWrapper = args.skipWrapper;
   if (args.help) {
     printHelp();
     return;
@@ -1230,7 +1307,7 @@ async function main() {
   }
 
   let tag = args.tag;
-  if (!tag) {
+  if (!tag && !args.offline) {
     try {
       tag = await withTimeout(fetchLatestTag(), 5000, "fetch latest tag");
     } catch {
@@ -1279,7 +1356,20 @@ async function main() {
   process.stdout.write("Done.\n");
 }
 
-main().catch((err) => {
-  process.stderr.write(`ERROR: ${err && err.message ? err.message : String(err)}\n`);
-  process.exit(1);
-});
+module.exports = {
+  normalizeHookCommand,
+  hookEntryKey,
+  entryPointsInto,
+  resolvePythonCommand,
+  mergeHooksToSettings,
+  unmergeHooksFromSettings,
+  mergeModuleHooks,
+  parseArgs,
+};
+
+if (require.main === module) {
+  main().catch((err) => {
+    process.stderr.write(`ERROR: ${err && err.message ? err.message : String(err)}\n`);
+    process.exit(1);
+  });
+}

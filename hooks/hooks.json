@@ -7,11 +7,11 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 ${CLAUDE_PLUGIN_ROOT}/pre-bash.py \"$CLAUDE_TOOL_INPUT\""
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/pre-bash.py\" \"$CLAUDE_TOOL_INPUT\""
           },
           {
             "type": "command",
-            "command": "python3 ${CLAUDE_PLUGIN_ROOT}/inject-spec.py"
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/inject-spec.py\""
           }
         ]
       }
@@ -21,7 +21,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 ${CLAUDE_PLUGIN_ROOT}/log-prompt.py"
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/log-prompt.py\""
           }
         ]
       }
