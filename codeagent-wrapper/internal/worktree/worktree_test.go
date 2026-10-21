@@ -127,15 +127,18 @@ func TestCreateWorktree_EmptyProjectDir(t *testing.T) {
 
 	// When projectDir is empty, it should default to "."
 	// This will fail because current dir may not be a git repo, but we test the default behavior
+	var gotArgs []string
+	execCommand = func(name string, args ...string) *exec.Cmd {
+		gotArgs = append([]string{name}, args...)
+		return exec.Command("git", "--definitely-not-a-real-command")
+	}
 	_, err := CreateWorktree("")
 	// We just verify it doesn't panic and returns an error (likely "not a git repository: .")
-	if err == nil {
-		// If we happen to be in a git repo, that's fine too
-		return
+	if err == nil || err.Error() != "not a git repository: ." {
+		t.Fatalf("CreateWorktree(\"\") error = %v, want not a git repository: .", err)
 	}
-	if !regexp.MustCompile(`not a git repository: \.`).MatchString(err.Error()) {
-		// It might be a git repo and fail later, which is also acceptable
-		return
+	if len(gotArgs) < 3 || gotArgs[0] != "git" || gotArgs[1] != "-C" || gotArgs[2] != "." {
+		t.Fatalf("mocked command args = %q, want git -C . ...", gotArgs)
 	}
 }
 

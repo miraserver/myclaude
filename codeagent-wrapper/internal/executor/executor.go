@@ -25,6 +25,7 @@ import (
 )
 
 const forceKillWaitTimeout = 5 * time.Second
+const pipeDrainGracePeriod = time.Second
 const defaultProgressHeartbeatInterval = 15 * time.Second
 
 // Defaults duplicated from wrapper for module decoupling.
@@ -160,14 +161,27 @@ type processHandle interface {
 
 // realCmd implements commandRunner using exec.Cmd
 type realCmd struct {
-	cmd *exec.Cmd
+	cmd         *exec.Cmd
+	pipeWriters []*os.File
 }
 
 func (r *realCmd) Start() error {
 	if r.cmd == nil {
 		return errors.New("command is nil")
 	}
-	return r.cmd.Start()
+	err := r.cmd.Start()
+	for _, w := range r.pipeWriters {
+		_ = w.Close()
+	}
+	r.pipeWriters = nil
+	return err
+}
+
+func (r *realCmd) ClosePipes() {
+	for _, w := range r.pipeWriters {
+		_ = w.Close()
+	}
+	r.pipeWriters = nil
 }
 
 func (r *realCmd) Wait() error {
@@ -177,18 +191,58 @@ func (r *realCmd) Wait() error {
 	return r.cmd.Wait()
 }
 
+func (r *realCmd) outputPipe(stderr bool) (io.ReadCloser, error) {
+	if r.cmd == nil {
+		return nil, errors.New("command is nil")
+	}
+	if stderr && r.cmd.Stderr != nil {
+		return nil, errors.New("exec: Stderr already set")
+	}
+	if !stderr && r.cmd.Stdout != nil {
+		return nil, errors.New("exec: Stdout already set")
+	}
+	readEnd, writeEnd, err := os.Pipe()
+	if err != nil {
+		return nil, err
+	}
+	if stderr {
+		r.cmd.Stderr = writeEnd
+	} else {
+		r.cmd.Stdout = writeEnd
+	}
+	r.pipeWriters = append(r.pipeWriters, writeEnd)
+	return readEnd, nil
+}
+
+func drainWithGrace(parseDone <-chan struct{}, stderrDone <-chan error, grace time.Duration) (stderrDrained bool) {
+	timer := time.NewTimer(grace)
+	defer timer.Stop()
+	for parseDone != nil || stderrDone != nil {
+		select {
+		case <-parseDone:
+			parseDone = nil
+		case <-stderrDone:
+			stderrDrained = true
+			stderrDone = nil
+		case <-timer.C:
+			return stderrDrained
+		}
+	}
+	return stderrDrained
+}
+
 func (r *realCmd) StdoutPipe() (io.ReadCloser, error) {
 	if r.cmd == nil {
 		return nil, errors.New("command is nil")
 	}
-	return r.cmd.StdoutPipe()
+	return r.outputPipe(false)
 }
 
 func (r *realCmd) StderrPipe() (io.ReadCloser, error) {
 	if r.cmd == nil {
 		return nil, errors.New("command is nil")
 	}
-	return r.cmd.StderrPipe()
+	return r.outputPipe(true)
 }
 
 func (r *realCmd) StdinPipe() (io.WriteCloser, error) {
@@ -1167,6 +1221,14 @@ func RunCodexTaskWithContext(parentCtx context.Context, taskSpec TaskSpec, backe
 		result.Error = attachStderr("failed to create stderr pipe: " + err.Error())
 		return result
 	}
+	started := false
+	defer func() {
+		if !started {
+			if cleanup, ok := cmd.(interface{ ClosePipes() }); ok {
+				cleanup.ClosePipes()
+			}
+		}
+	}()
 
 	var stdinPipe io.WriteCloser
 	if useStdin {
@@ -1219,6 +1281,7 @@ func RunCodexTaskWithContext(parentCtx context.Context, taskSpec TaskSpec, backe
 		result.Error = attachStderr("failed to start " + commandName + ": " + err.Error())
 		return result
 	}
+	started = true
 
 	logInfoFn(fmt.Sprintf("Starting %s with PID: %d", commandName, cmd.Process().Pid()))
 	if logger != nil {
@@ -1243,9 +1306,6 @@ func RunCodexTaskWithContext(parentCtx context.Context, taskSpec TaskSpec, backe
 		logInfoFn("Stdin closed")
 	}
 
-	waitCh := make(chan error, 1)
-	go func() { waitCh <- cmd.Wait() }()
-
 	emitProgress(silent, "started", taskSpec, commandName, result.LogPath, 0)
 
 	var (
@@ -1255,7 +1315,9 @@ func RunCodexTaskWithContext(parentCtx context.Context, taskSpec TaskSpec, backe
 	// Start parse goroutine BEFORE entering the wait loop so progress callbacks
 	// can surface backend activity while the process is still running.
 	parseCh := make(chan parseResult, 1)
+	parseDone := make(chan struct{})
 	go func() {
+		defer close(parseDone)
 		msg, tid := parseJSONStreamInternal(stdoutReader, logWarnFn, logInfoFn, func() {
 			if firstMessageSeen.CompareAndSwap(false, true) {
 				emitProgress(silent, "streaming", taskSpec, commandName, result.LogPath, 0)
@@ -1266,6 +1328,11 @@ func RunCodexTaskWithContext(parentCtx context.Context, taskSpec TaskSpec, backe
 			}
 		})
 		parseCh <- parseResult{message: msg, threadID: tid}
+	}()
+
+	waitCh := make(chan error, 1)
+	go func() {
+		waitCh <- cmd.Wait()
 	}()
 
 	var heartbeat <-chan time.Time
@@ -1318,18 +1385,23 @@ waitLoop:
 		forceKillTimer.Stop()
 	}
 
+	stderrDrained := false
 	if ctxCancelled {
 		closeWithReason(stdout, stdoutCloseReasonCtx)
+		closeWithReason(stderr, stdoutCloseReasonCtx)
 	} else {
+		if completeSeen.Load() {
+			closeWithReason(stdout, stdoutCloseReasonWait)
+		}
+		stderrDrained = drainWithGrace(parseDone, stderrDone, pipeDrainGracePeriod)
 		closeWithReason(stdout, stdoutCloseReasonWait)
+		closeWithReason(stderr, stdoutCloseReasonWait)
 	}
 	parsed := <-parseCh
-
-	closeWithReason(stderr, stdoutCloseReasonWait)
-	// Wait for stderr drain so stderrBuf / stderrLogger are not accessed concurrently.
-	// Important: cmd.Wait can block on internal stderr copying if cmd.Stderr is a non-file writer.
-	// We use StderrPipe and drain ourselves to avoid that deadlock class (common when children inherit pipes).
-	<-stderrDone
+	// Ensure stderrBuf is no longer being written before it is inspected.
+	if !stderrDrained {
+		<-stderrDone
+	}
 
 	if ctxErr := ctx.Err(); ctxErr != nil {
 		result.ExitCode = 130

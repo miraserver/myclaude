@@ -253,7 +253,7 @@ func ParseJSONStreamInternal(r io.Reader, warnFn func(string), infoFn func(strin
 				threadID = event.SessionID
 			}
 
-			if event.Content != "" {
+			if event.Content != "" && event.Role != "user" && event.Role != "system" {
 				geminiBuffer.WriteString(event.Content)
 			}
 
