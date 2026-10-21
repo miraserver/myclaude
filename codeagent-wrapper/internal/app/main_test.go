@@ -2963,7 +2963,7 @@ func TestRunCodexTask_CommandNotFound(t *testing.T) {
 
 func TestRunCodexTask_StartError(t *testing.T) {
 	defer resetTestHooks()
-	tmpFile, err := os.CreateTemp("", "start-error")
+	tmpFile, err := os.CreateTemp("", "start-error*.exe")
 	if err != nil {
 		t.Fatalf("failed to create temp file: %v", err)
 	}
