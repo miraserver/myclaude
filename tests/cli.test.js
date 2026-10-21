@@ -14,6 +14,7 @@ const {
   mergeHooksToSettings,
   unmergeHooksFromSettings,
   mergeModuleHooks,
+  uninstallModule,
   parseArgs,
 } = require("../bin/cli.js");
 
@@ -231,6 +232,65 @@ test("module merge reconciles all hook sources together", (t) => {
   assert.equal(mergeModuleHooks("claudekit", mod, f.installDir), true);
   assert.deepEqual(Object.keys(f.read().hooks), ["Stop", "PreToolUse", "UserPromptSubmit"]);
   assert.equal(mergeModuleHooks("claudekit", mod, f.installDir), false);
+});
+
+test("uninstall copy_dir preserves foreign files and hooks in shared target", async (t) => {
+  const f = fixture(t);
+  const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "myclaude-repo-"));
+  t.after(() => fs.rmSync(repoRoot, { recursive: true, force: true }));
+  fs.mkdirSync(path.join(repoRoot, "hooks"), { recursive: true });
+  fs.writeFileSync(path.join(repoRoot, "hooks", "module.py"), "module");
+  fs.mkdirSync(path.join(f.installDir, "hooks"), { recursive: true });
+  fs.writeFileSync(path.join(f.installDir, "hooks", "module.py"), "module");
+  fs.writeFileSync(path.join(f.installDir, "hooks", "herdr-agent-state.ps1"), "foreign");
+  fs.writeFileSync(f.settingsPath, JSON.stringify({ hooks: { SessionStart: [
+    commandEntry(`powershell -File "${path.join(f.installDir, "hooks", "herdr-agent-state.ps1")}" session`),
+  ] } }));
+  await uninstallModule("claudekit", { modules: { claudekit: { operations: [
+    { type: "copy_dir", source: "hooks", target: "hooks" },
+  ] } } }, repoRoot, f.installDir, false);
+  assert.equal(fs.existsSync(path.join(f.installDir, "hooks", "module.py")), false);
+  assert.equal(fs.existsSync(path.join(f.installDir, "hooks", "herdr-agent-state.ps1")), true);
+  assert.equal(f.read().hooks.SessionStart.length, 1);
+});
+
+test("uninstall skill dir removes files, empty dirs, and hooks", async (t) => {
+  const f = fixture(t);
+  const skillRoot = path.join(f.installDir, "skills", "skill").replace(/\\/g, "/");
+  fs.writeFileSync(f.settingsPath, JSON.stringify({ hooks: { Stop: [
+    commandEntry("python3 /tmp/skill/hooks/stop.py", { __module__: "skill" }),
+    commandEntry(`python3 "${skillRoot}/hooks/orphan.py"`),
+  ] } }));
+  const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "myclaude-repo-"));
+  t.after(() => fs.rmSync(repoRoot, { recursive: true, force: true }));
+  fs.mkdirSync(path.join(repoRoot, "skill", "hooks"), { recursive: true });
+  fs.writeFileSync(path.join(repoRoot, "skill", "hooks", "hooks.json"), "{}");
+  fs.writeFileSync(path.join(repoRoot, "skill", "hooks", "stop.py"), "stop");
+  const target = path.join(f.installDir, "skills", "skill");
+  fs.mkdirSync(path.join(target, "hooks"), { recursive: true });
+  fs.writeFileSync(path.join(target, "hooks", "hooks.json"), "{}");
+  fs.writeFileSync(path.join(target, "hooks", "stop.py"), "stop");
+  await uninstallModule("skill", { modules: { skill: { operations: [
+    { type: "copy_dir", source: "skill", target: "skills/skill" },
+  ] } } }, repoRoot, f.installDir, false);
+  assert.equal(fs.existsSync(target), false);
+  assert.deepEqual(f.read().hooks, {});
+});
+
+test("uninstall missing copy_dir source removes whole target and dry-run changes nothing", async (t) => {
+  const f = fixture(t);
+  const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "myclaude-repo-"));
+  t.after(() => fs.rmSync(repoRoot, { recursive: true, force: true }));
+  const target = path.join(f.installDir, "missing");
+  fs.mkdirSync(target);
+  fs.writeFileSync(path.join(target, "file.txt"), "x");
+  const config = { modules: { missing: { operations: [
+    { type: "copy_dir", source: "absent", target: "missing" },
+  ] } } };
+  await uninstallModule("missing", config, repoRoot, f.installDir, true);
+  assert.equal(fs.existsSync(target), true);
+  await uninstallModule("missing", config, repoRoot, f.installDir, false);
+  assert.equal(fs.existsSync(target), false);
 });
 
 test("offline listing makes no HTTPS requests", (t) => {

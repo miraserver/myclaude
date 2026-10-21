@@ -1013,6 +1013,41 @@ async function removePathIfExists(p) {
   }
 }
 
+async function listSourceTree(srcDir, rel = "", files = [], dirs = []) {
+  dirs.push(rel);
+  for (const entry of await fs.promises.readdir(srcDir, { withFileTypes: true })) {
+    const childRel = path.join(rel, entry.name);
+    const childSrc = path.join(srcDir, entry.name);
+    if (entry.isDirectory()) await listSourceTree(childSrc, childRel, files, dirs);
+    else files.push(childRel);
+  }
+  return { files, dirs };
+}
+
+async function removeCopyDirContents(srcDir, targetDir, dryRun) {
+  const { files, dirs } = await listSourceTree(srcDir);
+  const removableFiles = [];
+  for (const rel of files) {
+    const target = path.join(targetDir, rel);
+    if (!fs.existsSync(target)) continue;
+    try {
+      if (!(await fs.promises.lstat(target)).isDirectory()) removableFiles.push(target);
+    } catch {
+      continue;
+    }
+  }
+
+  if (dryRun) {
+    for (const target of removableFiles) process.stdout.write(`- remove ${target}\n`);
+    return;
+  }
+
+  for (const target of removableFiles) await removePathIfExists(target);
+  for (const rel of dirs.sort((a, b) => b.length - a.length)) {
+    await tryRemoveEmptyDir(path.join(targetDir, rel));
+  }
+}
+
 async function uninstallModule(moduleName, config, repoRoot, installDir, dryRun) {
   const mod = config && config.modules && config.modules[moduleName];
   if (!mod) throw new Error(`Unknown module: ${moduleName}`);
@@ -1023,12 +1058,26 @@ async function uninstallModule(moduleName, config, repoRoot, installDir, dryRun)
 
   for (const op of ops) {
     const type = op && op.type;
-    if (type === "copy_file" || type === "copy_dir") {
+    if (type === "copy_file") {
       const target = typeof op.target === "string" ? op.target : "";
       if (!target) continue;
       const p = path.join(installDir, target);
       if (dryRun) process.stdout.write(`- remove ${p}\n`);
       else await removePathIfExists(p);
+      continue;
+    }
+
+    if (type === "copy_dir") {
+      const target = typeof op.target === "string" ? op.target : "";
+      if (!target) continue;
+      const srcDir = typeof op.source === "string" ? path.join(repoRoot, op.source) : "";
+      const targetDir = path.join(installDir, target);
+      if (srcDir && await dirExists(srcDir)) {
+        await removeCopyDirContents(srcDir, targetDir, dryRun);
+      } else {
+        if (dryRun) process.stdout.write(`- remove ${targetDir}\n`);
+        else await removePathIfExists(targetDir);
+      }
       continue;
     }
 
@@ -1081,7 +1130,8 @@ async function uninstallModule(moduleName, config, repoRoot, installDir, dryRun)
 
   if (dryRun) return;
   const pluginRoots = ops
-    .filter((op) => op && op.type === "copy_dir" && typeof op.target === "string" && op.target)
+    .filter((op) => op && op.type === "copy_dir" && typeof op.target === "string" && op.target &&
+      typeof op.source === "string" && fs.existsSync(path.join(repoRoot, op.source, "hooks", "hooks.json")))
     .map((op) => path.resolve(installDir, op.target).replace(/\\/g, "/"));
   unmergeHooksFromSettings(moduleName, installDir, pluginRoots);
   deleteModuleStatus(installDir, moduleName);
@@ -1364,6 +1414,7 @@ module.exports = {
   mergeHooksToSettings,
   unmergeHooksFromSettings,
   mergeModuleHooks,
+  uninstallModule,
   parseArgs,
 };
 
