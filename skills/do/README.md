@@ -181,15 +181,16 @@ Required when using `agent:` in parallel tasks or `--agent`. Create `~/.codeagen
   "agents": {
     "code-explorer": {
       "backend": "claude",
-      "model": "claude-sonnet-4-5-20250929"
+      "model": "claude-sonnet-5-5"
     },
     "code-architect": {
       "backend": "claude",
-      "model": "claude-sonnet-4-5-20250929"
+      "model": "claude-opus-5-5"
     },
     "code-reviewer": {
-      "backend": "claude",
-      "model": "claude-sonnet-4-5-20250929"
+      "backend": "codex",
+      "model": "gpt-6.1-sol",
+      "reasoning": "xhigh"
     }
   }
 }

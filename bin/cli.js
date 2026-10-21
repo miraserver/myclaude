@@ -792,7 +792,7 @@ async function rmTree(p) {
 function defaultModelsConfig() {
   return {
     default_backend: "codex",
-    default_model: "gpt-4.1",
+    default_model: "gpt-6.1-sol",
     backends: {},
     agents: {},
   };

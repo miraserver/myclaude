@@ -39,7 +39,7 @@ const modelsConfigTildePath = "~/.codeagent/models.json"
 
 const modelsConfigExample = `{
   "default_backend": "codex",
-  "default_model": "gpt-4.1",
+  "default_model": "gpt-6.1-sol",
   "backends": {
     "codex": { "api_key": "..." },
     "claude": { "api_key": "..." }
@@ -47,7 +47,7 @@ const modelsConfigExample = `{
   "agents": {
     "develop": {
       "backend": "codex",
-      "model": "gpt-4.1",
+      "model": "gpt-6.1-sol",
       "prompt_file": "~/.codeagent/prompts/develop.md",
       "reasoning": "high",
       "yolo": true

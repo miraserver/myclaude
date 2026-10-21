@@ -156,7 +156,7 @@ Example (YAML):
 
 ```yaml
 backend: codex
-model: gpt-4.1
+model: gpt-6.1-sol
 skip-permissions: false
 ```
 
@@ -185,7 +185,7 @@ Read via viper with automatic `-` to `_` mapping:
 ```json
 {
   "default_backend": "codex",
-  "default_model": "gpt-4.1",
+  "default_model": "gpt-6.1-sol",
   "backends": {
     "codex": { "api_key": "..." },
     "claude": { "base_url": "http://localhost:23001", "api_key": "..." }
@@ -193,7 +193,7 @@ Read via viper with automatic `-` to `_` mapping:
   "agents": {
     "develop": {
       "backend": "codex",
-      "model": "gpt-4.1",
+      "model": "gpt-6.1-sol",
       "prompt_file": "~/.codeagent/prompts/develop.md",
       "reasoning": "high",
       "yolo": true,

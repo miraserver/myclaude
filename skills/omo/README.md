@@ -18,11 +18,11 @@ python install.py --module omo
 
 | Agent | Role | Backend | Model |
 |-------|------|---------|-------|
-| `oracle` | Technical advisor | claude | claude-opus-4-5 |
-| `librarian` | External research | claude | claude-sonnet-4-5 |
-| `explore` | Codebase search | opencode | grok-code |
-| `develop` | Code implementation | codex | gpt-5.2 |
-| `frontend-ui-ux-engineer` | UI/UX specialist | gemini | gemini-3-pro |
+| `oracle` | Technical advisor | claude | claude-opus-5-5 |
+| `librarian` | External research | codex | gpt-6.1-sol |
+| `explore` | Codebase search | claude | claude-sonnet-5-5 |
+| `develop` | Code implementation | codex | gpt-6.1-sol |
+| `frontend-ui-ux-engineer` | UI/UX specialist | claude | claude-opus-5-5 |
 | `document-writer` | Documentation | gemini | gemini-3-flash |
 
 ## Routing Signals (Not Fixed Pipeline)
@@ -123,25 +123,26 @@ Agent-model mappings in `~/.codeagent/models.json`:
 ```json
 {
   "default_backend": "codex",
-  "default_model": "gpt-5.2",
+  "default_model": "gpt-6.1-sol",
   "agents": {
     "oracle": {
       "backend": "claude",
-      "model": "claude-opus-4-5-20251101",
+      "model": "claude-opus-5-5",
       "yolo": true
     },
     "librarian": {
-      "backend": "claude",
-      "model": "claude-sonnet-4-5-20250929",
+      "backend": "codex",
+      "model": "gpt-6.1-sol",
+      "reasoning": "xhigh",
       "yolo": true
     },
     "explore": {
-      "backend": "opencode",
-      "model": "opencode/grok-code"
+      "backend": "claude",
+      "model": "claude-sonnet-5-5"
     },
     "frontend-ui-ux-engineer": {
-      "backend": "gemini",
-      "model": "gemini-3-pro-preview"
+      "backend": "claude",
+      "model": "claude-opus-5-5"
     },
     "document-writer": {
       "backend": "gemini",
@@ -149,7 +150,7 @@ Agent-model mappings in `~/.codeagent/models.json`:
     },
     "develop": {
       "backend": "codex",
-      "model": "gpt-5.2",
+      "model": "gpt-6.1-sol",
       "yolo": true,
       "reasoning": "xhigh"
     }

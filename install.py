@@ -263,7 +263,7 @@ def merge_agents_to_models(module_name: str, agents: Dict[str, Any], ctx: Dict[s
         else:
             models = {
                 "default_backend": "codex",
-                "default_model": "gpt-4.1",
+                "default_model": "gpt-6.1-sol",
                 "backends": {},
                 "agents": {},
             }
