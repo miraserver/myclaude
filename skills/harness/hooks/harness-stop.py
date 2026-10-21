@@ -13,18 +13,9 @@ import sys
 from pathlib import Path
 from typing import Any, Optional
 
+from _harness_common import read_hook_payload, write_stderr
+
 MAX_CONSECUTIVE_BLOCKS = 8  # safety valve
-
-
-def _read_hook_payload() -> dict[str, Any]:
-    raw = sys.stdin.read()
-    if not raw.strip():
-        return {}
-    try:
-        data = json.loads(raw)
-        return data if isinstance(data, dict) else {}
-    except Exception:
-        return {"_invalid_json": True}
 
 
 def _find_harness_root(payload: dict[str, Any]) -> Optional[Path]:
@@ -155,7 +146,7 @@ def _is_harness_active(root: Path) -> bool:
 
 
 def main() -> int:
-    payload = _read_hook_payload()
+    payload = read_hook_payload(invalid_json=True)
 
     # Safety: if stop_hook_active is True, Claude is already continuing
     # from a previous Stop hook block. Check if we should allow stop
@@ -180,9 +171,11 @@ def main() -> int:
         tasks = [t for t in tasks_raw if isinstance(t, dict)]
     except Exception as e:
         if stop_hook_active:
-            sys.stderr.write(
-                "HARNESS: WARN — harness-tasks.json 无法解析且 stop_hook_active=True，"
-                "为避免无限循环，本次允许停止。\n"
+            write_stderr(
+                (
+                    "HARNESS: WARN — harness-tasks.json 无法解析且 stop_hook_active=True，"
+                    "为避免无限循环，本次允许停止。\n"
+                )
             )
             return 0
         reason = (
@@ -190,7 +183,7 @@ def main() -> int:
             f"HARNESS: error={e}\n"
             "按 SKILL.md 的 JSON corruption 恢复：优先用 harness-tasks.json.bak 还原；无法还原则停止并要求人工修复。"
         )
-        print(json.dumps({"decision": "block", "reason": reason}, ensure_ascii=False))
+        print(json.dumps({"decision": "block", "reason": reason}, ensure_ascii=True))
         return 0
 
     session_config = state.get("session_config") or {}
@@ -282,9 +275,11 @@ def main() -> int:
     if stop_hook_active and consecutive > MAX_CONSECUTIVE_BLOCKS:
         # Too many consecutive blocks without progress — allow stop to prevent infinite loop
         _reset_block_counter(root)
-        sys.stderr.write(
-            f"HARNESS: WARN — Stop hook blocked {consecutive} times without progress. "
-            "Allowing stop to prevent infinite loop. Check task definitions and validation commands.\n"
+        write_stderr(
+            (
+                f"HARNESS: WARN — Stop hook blocked {consecutive} times without progress. "
+                "Allowing stop to prevent infinite loop. Check task definitions and validation commands.\n"
+            )
         )
         return 0
 
@@ -311,7 +306,7 @@ def main() -> int:
         "Claim → Checkpoint → Validate → Record outcome → STATS（如需）→ Continue。"
     )
 
-    print(json.dumps({"decision": "block", "reason": reason}, ensure_ascii=False))
+    print(json.dumps({"decision": "block", "reason": reason}, ensure_ascii=True))
     return 0
 
 

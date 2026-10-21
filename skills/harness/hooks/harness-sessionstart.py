@@ -7,16 +7,7 @@ import sys
 from pathlib import Path
 from typing import Any, Optional
 
-
-def _read_hook_payload() -> dict[str, Any]:
-    raw = sys.stdin.read()
-    if not raw.strip():
-        return {}
-    try:
-        data = json.loads(raw)
-        return data if isinstance(data, dict) else {}
-    except Exception:
-        return {"_invalid_json": True}
+from _harness_common import read_hook_payload
 
 
 def _find_harness_root(payload: dict[str, Any]) -> Optional[Path]:
@@ -121,7 +112,7 @@ def _is_harness_active(root: Path) -> bool:
 
 
 def main() -> int:
-    payload = _read_hook_payload()
+    payload = read_hook_payload(invalid_json=True)
     root = _find_harness_root(payload)
     if root is None:
         return 0
@@ -141,7 +132,7 @@ def main() -> int:
         tasks = [t for t in tasks_raw if isinstance(t, dict)]
     except Exception as e:
         context = f"HARNESS: CONFIG error: cannot read {tasks_path.name}: {e}"
-        print(json.dumps({"hookSpecificOutput": {"additionalContext": context}}, ensure_ascii=False))
+        print(json.dumps({"hookSpecificOutput": {"additionalContext": context}}, ensure_ascii=True))
         return 0
 
     counts: dict[str, int] = {}
@@ -178,7 +169,7 @@ def main() -> int:
     if last_stats:
         summary += f"\nHARNESS: last_log={last_stats}"
 
-    print(json.dumps({"hookSpecificOutput": {"additionalContext": summary}}, ensure_ascii=False))
+    print(json.dumps({"hookSpecificOutput": {"additionalContext": summary}}, ensure_ascii=True))
     return 0
 
 

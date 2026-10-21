@@ -13,16 +13,7 @@ import sys
 from pathlib import Path
 from typing import Any, Optional
 
-
-def _read_hook_payload() -> dict[str, Any]:
-    raw = sys.stdin.read()
-    if not raw.strip():
-        return {}
-    try:
-        data = json.loads(raw)
-        return data if isinstance(data, dict) else {}
-    except Exception:
-        return {}
+from _harness_common import read_hook_payload, write_stderr
 
 
 def _find_harness_root(payload: dict[str, Any]) -> Optional[Path]:
@@ -73,7 +64,7 @@ def _is_harness_active(root: Path) -> bool:
 
 
 def main() -> int:
-    payload = _read_hook_payload()
+    payload = read_hook_payload()
     root = _find_harness_root(payload)
     if root is None:
         return 0  # no harness project, allow idle
@@ -137,9 +128,11 @@ def main() -> int:
     if owned:
         tid = str(owned[0].get("id") or "")
         title = str(owned[0].get("title") or "")
-        sys.stderr.write(
-            f"HARNESS: 你仍有进行中的任务 [{tid}] {title}。"
-            "请继续执行或完成该任务后再停止。\n"
+        write_stderr(
+            (
+                f"HARNESS: 你仍有进行中的任务 [{tid}] {title}。"
+                "请继续执行或完成该任务后再停止。\n"
+            )
         )
         return 2  # block idle
 
@@ -147,9 +140,11 @@ def main() -> int:
         next_t = pending[0] if pending else retryable[0]
         tid = str(next_t.get("id") or "")
         title = str(next_t.get("title") or "")
-        sys.stderr.write(
-            f"HARNESS: 仍有 {len(pending)} 个待执行 + {len(retryable)} 个可重试任务。"
-            f"下一个: [{tid}] {title}。请继续执行。\n"
+        write_stderr(
+            (
+                f"HARNESS: 仍有 {len(pending)} 个待执行 + {len(retryable)} 个可重试任务。"
+                f"下一个: [{tid}] {title}。请继续执行。\n"
+            )
         )
         return 2  # block idle
 

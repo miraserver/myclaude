@@ -12,6 +12,8 @@ import tempfile
 from pathlib import Path
 from typing import Any, Optional
 
+from _harness_common import read_hook_payload
+
 
 def _utc_now() -> _dt.datetime:
     return _dt.datetime.now(tz=_dt.timezone.utc)
@@ -20,17 +22,6 @@ def _utc_now() -> _dt.datetime:
 def _iso_z(dt: _dt.datetime) -> str:
     dt = dt.astimezone(_dt.timezone.utc).replace(microsecond=0)
     return dt.isoformat().replace("+00:00", "Z")
-
-
-def _read_payload() -> dict[str, Any]:
-    raw = sys.stdin.read()
-    if not raw.strip():
-        return {}
-    try:
-        data = json.loads(raw)
-        return data if isinstance(data, dict) else {}
-    except Exception:
-        return {}
 
 
 def _find_state_root(payload: dict[str, Any]) -> Optional[Path]:
@@ -147,20 +138,20 @@ def _atomic_write_json(path: Path, data: dict[str, Any]) -> None:
 
 
 def main() -> int:
-    payload = _read_payload()
+    payload = read_hook_payload()
     root = _find_state_root(payload)
     if root is None:
-        print(json.dumps({"renewed": False, "error": "state root not found"}, ensure_ascii=False))
+        print(json.dumps({"renewed": False, "error": "state root not found"}, ensure_ascii=True))
         return 0
 
     task_id = os.environ.get("HARNESS_TASK_ID") or str(payload.get("task_id") or "").strip()
     if not task_id:
-        print(json.dumps({"renewed": False, "error": "missing task_id"}, ensure_ascii=False))
+        print(json.dumps({"renewed": False, "error": "missing task_id"}, ensure_ascii=True))
         return 0
 
     worker_id = os.environ.get("HARNESS_WORKER_ID") or ""
     if not worker_id:
-        print(json.dumps({"renewed": False, "error": "missing HARNESS_WORKER_ID"}, ensure_ascii=False))
+        print(json.dumps({"renewed": False, "error": "missing HARNESS_WORKER_ID"}, ensure_ascii=True))
         return 0
     lease_seconds = int(os.environ.get("HARNESS_LEASE_SECONDS") or "1800")
 
@@ -171,7 +162,7 @@ def main() -> int:
     try:
         _acquire_lock(lockdir, timeout_s)
     except Exception as e:
-        print(json.dumps({"renewed": False, "error": str(e)}, ensure_ascii=False))
+        print(json.dumps({"renewed": False, "error": str(e)}, ensure_ascii=True))
         return 0
 
     try:
@@ -183,16 +174,16 @@ def main() -> int:
 
         task = next((t for t in tasks if str(t.get("id") or "") == task_id), None)
         if task is None:
-            print(json.dumps({"renewed": False, "error": "task not found"}, ensure_ascii=False))
+            print(json.dumps({"renewed": False, "error": "task not found"}, ensure_ascii=True))
             return 0
 
         if str(task.get("status") or "") != "in_progress":
-            print(json.dumps({"renewed": False, "error": "task not in_progress"}, ensure_ascii=False))
+            print(json.dumps({"renewed": False, "error": "task not in_progress"}, ensure_ascii=True))
             return 0
 
         claimed_by = str(task.get("claimed_by") or "")
         if claimed_by and claimed_by != worker_id:
-            print(json.dumps({"renewed": False, "error": "task owned by other worker"}, ensure_ascii=False))
+            print(json.dumps({"renewed": False, "error": "task owned by other worker"}, ensure_ascii=True))
             return 0
 
         now = _utc_now()
@@ -202,10 +193,10 @@ def main() -> int:
         state["tasks"] = tasks
         _atomic_write_json(tasks_path, state)
 
-        print(json.dumps({"renewed": True, "task_id": task_id, "lease_expires_at": task["lease_expires_at"]}, ensure_ascii=False))
+        print(json.dumps({"renewed": True, "task_id": task_id, "lease_expires_at": task["lease_expires_at"]}, ensure_ascii=True))
         return 0
     except Exception as e:
-        print(json.dumps({"renewed": False, "error": str(e)}, ensure_ascii=False))
+        print(json.dumps({"renewed": False, "error": str(e)}, ensure_ascii=True))
         return 0
     finally:
         _release_lock(lockdir)

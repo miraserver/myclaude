@@ -50,16 +50,17 @@ def parse_iso(ts: Any) -> Optional[_dt.datetime]:
 # Hook payload
 # ---------------------------------------------------------------------------
 
-def read_hook_payload() -> dict[str, Any]:
+def read_hook_payload(*, invalid_json: bool = False) -> dict[str, Any]:
     """Read JSON payload from stdin (sent by Claude Code to command hooks)."""
-    raw = sys.stdin.read()
-    if not raw.strip():
-        return {}
     try:
+        # Hook payloads are UTF-8, independently of the console code page.
+        raw = sys.stdin.buffer.read().decode("utf-8-sig")
+        if not raw.strip():
+            return {}
         data = json.loads(raw)
         return data if isinstance(data, dict) else {}
     except Exception:
-        return {}
+        return {"_invalid_json": True} if invalid_json else {}
 
 
 def maybe_log_hook_event(root: Path, payload: dict[str, Any], hook_script: str) -> None:
@@ -385,9 +386,22 @@ def is_concurrent(cfg: dict[str, Any]) -> bool:
 # Hook output helpers
 # ---------------------------------------------------------------------------
 
+def write_stderr(text: str) -> None:
+    """Write hook feedback as UTF-8 regardless of the console encoding."""
+    stream = sys.stderr
+    buffer = getattr(stream, "buffer", None)
+    if buffer is not None:
+        buffer.write(text.encode("utf-8"))
+        buffer.flush()
+    else:
+        encoding = getattr(stream, "encoding", None) or "utf-8"
+        stream.write(text.encode(encoding, errors="backslashreplace").decode(encoding))
+        stream.flush()
+
+
 def emit_block(reason: str) -> None:
     """Print a JSON block decision to stdout and exit 0."""
-    print(json.dumps({"decision": "block", "reason": reason}, ensure_ascii=False))
+    print(json.dumps({"decision": "block", "reason": reason}, ensure_ascii=True))
 
 
 def emit_allow(reason: str = "") -> None:
@@ -395,17 +409,17 @@ def emit_allow(reason: str = "") -> None:
     out: dict[str, Any] = {"decision": "allow"}
     if reason:
         out["reason"] = reason
-    print(json.dumps(out, ensure_ascii=False))
+    print(json.dumps(out, ensure_ascii=True))
 
 
 def emit_context(context: str) -> None:
     """Inject additional context via hookSpecificOutput."""
     print(json.dumps(
         {"hookSpecificOutput": {"additionalContext": context}},
-        ensure_ascii=False,
+        ensure_ascii=True,
     ))
 
 
 def emit_json(data: dict[str, Any]) -> None:
     """Print arbitrary JSON to stdout."""
-    print(json.dumps(data, ensure_ascii=False))
+    print(json.dumps(data, ensure_ascii=True))

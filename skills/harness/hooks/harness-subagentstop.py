@@ -13,16 +13,7 @@ import sys
 from pathlib import Path
 from typing import Any, Optional
 
-
-def _read_hook_payload() -> dict[str, Any]:
-    raw = sys.stdin.read()
-    if not raw.strip():
-        return {}
-    try:
-        data = json.loads(raw)
-        return data if isinstance(data, dict) else {}
-    except Exception:
-        return {}
+from _harness_common import read_hook_payload
 
 
 def _find_harness_root(payload: dict[str, Any]) -> Optional[Path]:
@@ -69,7 +60,7 @@ def _is_harness_active(root: Path) -> bool:
 
 
 def main() -> int:
-    payload = _read_hook_payload()
+    payload = read_hook_payload()
 
     # Safety: respect stop_hook_active to prevent infinite loops
     if payload.get("stop_hook_active", False):
@@ -108,7 +99,7 @@ def main() -> int:
             "HARNESS: concurrent 模式缺少 worker identity（HARNESS_WORKER_ID/agent_id）。"
             "为避免误停导致任务悬空，本次阻止停止。"
         )
-        print(json.dumps({"decision": "block", "reason": reason}, ensure_ascii=False))
+        print(json.dumps({"decision": "block", "reason": reason}, ensure_ascii=True))
         return 0
 
     if is_concurrent:
@@ -127,7 +118,7 @@ def main() -> int:
             f"HARNESS: 子代理仍有进行中的任务 [{tid}] {title}。"
             "请完成当前任务的验证和记录后再停止。"
         )
-        print(json.dumps({"decision": "block", "reason": reason}, ensure_ascii=False))
+        print(json.dumps({"decision": "block", "reason": reason}, ensure_ascii=True))
         return 0
 
     return 0  # all done, allow stop

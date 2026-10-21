@@ -13,6 +13,8 @@ import tempfile
 from pathlib import Path
 from typing import Any, Optional
 
+from _harness_common import read_hook_payload
+
 
 def _utc_now() -> _dt.datetime:
     return _dt.datetime.now(tz=_dt.timezone.utc)
@@ -36,17 +38,6 @@ def _parse_iso(ts: Any) -> Optional[_dt.datetime]:
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=_dt.timezone.utc)
     return dt.astimezone(_dt.timezone.utc)
-
-
-def _read_payload() -> dict[str, Any]:
-    raw = sys.stdin.read()
-    if not raw.strip():
-        return {}
-    try:
-        data = json.loads(raw)
-        return data if isinstance(data, dict) else {}
-    except Exception:
-        return {}
 
 
 def _find_state_root(payload: dict[str, Any]) -> Optional[Path]:
@@ -235,10 +226,10 @@ def _reap_stale_leases(tasks: list[dict[str, Any]], now: _dt.datetime) -> bool:
 
 
 def main() -> int:
-    payload = _read_payload()
+    payload = read_hook_payload()
     root = _find_state_root(payload)
     if root is None:
-        print(json.dumps({"claimed": False, "error": "state root not found"}, ensure_ascii=False))
+        print(json.dumps({"claimed": False, "error": "state root not found"}, ensure_ascii=True))
         return 0
 
     tasks_path = root / "harness-tasks.json"
@@ -266,12 +257,12 @@ def main() -> int:
         pending, retry = _eligible_tasks(tasks)
         task = pending[0] if pending else (retry[0] if retry else None)
         if task is None:
-            print(json.dumps({"claimed": False}, ensure_ascii=False))
+            print(json.dumps({"claimed": False}, ensure_ascii=True))
             return 0
 
         worker_id = os.environ.get("HARNESS_WORKER_ID") or ""
         if is_concurrent and not worker_id:
-            print(json.dumps({"claimed": False, "error": "missing HARNESS_WORKER_ID"}, ensure_ascii=False))
+            print(json.dumps({"claimed": False, "error": "missing HARNESS_WORKER_ID"}, ensure_ascii=True))
             return 0
         if not worker_id:
             worker_id = f"{socket.gethostname()}:{os.getpid()}"
@@ -292,7 +283,7 @@ def main() -> int:
             "title": str(task.get("title") or ""),
             "lease_expires_at": task["lease_expires_at"],
         }
-        print(json.dumps(out, ensure_ascii=False))
+        print(json.dumps(out, ensure_ascii=True))
         return 0
     finally:
         _release_lock(lockdir)

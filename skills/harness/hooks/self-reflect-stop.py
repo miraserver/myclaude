@@ -22,23 +22,9 @@ from typing import Any, Optional
 
 # Add hooks directory to sys.path for _harness_common import
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-try:
-    import _harness_common as hc
-except ImportError:
-    hc = None  # type: ignore[assignment]
+import _harness_common as hc
 
 DEFAULT_MAX_ITERATIONS = 5
-
-
-def _read_payload() -> dict[str, Any]:
-    raw = sys.stdin.read()
-    if not raw.strip():
-        return {}
-    try:
-        data = json.loads(raw)
-        return data if isinstance(data, dict) else {}
-    except Exception:
-        return {}
 
 
 def _find_harness_root(payload: dict[str, Any]) -> Optional[Path]:
@@ -141,7 +127,7 @@ def _extract_original_prompt(transcript_path: str, max_bytes: int = 100_000) -> 
 
 
 def main() -> int:
-    payload = _read_payload()
+    payload = hc.read_hook_payload()
     session_id = payload.get("session_id", "")
     if not session_id:
         return 0  # 无 session_id，放行
@@ -208,7 +194,7 @@ def main() -> int:
 
     reason = "\n".join(parts)
 
-    print(json.dumps({"decision": "block", "reason": reason}, ensure_ascii=False))
+    print(json.dumps({"decision": "block", "reason": reason}, ensure_ascii=True))
     return 0
 
 

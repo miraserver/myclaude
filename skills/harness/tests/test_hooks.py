@@ -36,15 +36,20 @@ def build_hook_env(env_extra: dict | None = None) -> dict[str, str]:
 def run_hook(script: Path, payload: dict, env_extra: dict | None = None) -> tuple[int, str, str]:
     """Run a hook script with JSON payload on stdin. Returns (exit_code, stdout, stderr)."""
     env = build_hook_env(env_extra)
-    proc = subprocess.run(
-        [sys.executable, str(script)],
-        input=json.dumps(payload),
-        capture_output=True,
-        text=True,
-        timeout=10,
-        env=env,
-    )
-    return proc.returncode, proc.stdout.strip(), proc.stderr.strip()
+    with tempfile.TemporaryDirectory() as isolated_cwd:
+        counter_root = payload.get("cwd", isolated_cwd)
+        if not Path(counter_root).is_dir():
+            counter_root = isolated_cwd
+        env.update({"TMP": str(counter_root), "TEMP": str(counter_root), "TMPDIR": str(counter_root)})
+        proc = subprocess.run(
+            [sys.executable, str(script)],
+            input=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+            cwd=isolated_cwd,
+            capture_output=True,
+            timeout=10,
+            env=env,
+        )
+    return proc.returncode, proc.stdout.decode("utf-8").strip(), proc.stderr.decode("utf-8").strip()
 
 
 def write_tasks(root: Path, tasks: list[dict], **extra) -> None:
@@ -594,7 +599,7 @@ class TestEdgeCases(unittest.TestCase):
             proc = subprocess.run(
                 [sys.executable, str(hook)],
                 input="",
-                capture_output=True, text=True, timeout=10,
+                capture_output=True, text=True, encoding="utf-8", timeout=10,
                 cwd=self.tmpdir,
                 env=build_hook_env(),
             )
@@ -609,7 +614,7 @@ class TestEdgeCases(unittest.TestCase):
             proc = subprocess.run(
                 [sys.executable, str(hook)],
                 input="not json at all",
-                capture_output=True, text=True, timeout=10,
+                capture_output=True, text=True, encoding="utf-8", timeout=10,
                 cwd=self.tmpdir,
                 env=build_hook_env(),
             )
@@ -657,12 +662,6 @@ class TestSelfReflectStopHook(unittest.TestCase):
     def tearDown(self):
         import shutil
         shutil.rmtree(self.tmpdir, ignore_errors=True)
-        # Clean up counter files
-        for p in Path(tempfile.gettempdir()).glob("claude-reflect-test-*"):
-            try:
-                p.unlink()
-            except Exception:
-                pass
 
     def _payload(self, session_id="test-reflect-001", **extra):
         return {"cwd": self.tmpdir, "session_id": session_id, **extra}
@@ -737,7 +736,7 @@ class TestSelfReflectStopHook(unittest.TestCase):
         sid = "test-reflect-max"
 
         # Write counter at max
-        counter_path = Path(tempfile.gettempdir()) / f"claude-reflect-{sid}"
+        counter_path = self.root / f"claude-reflect-{sid}"
         counter_path.write_text("5", encoding="utf-8")
 
         code, stdout, _ = run_hook(REFLECT_HOOK, self._payload(session_id=sid))
@@ -777,7 +776,7 @@ class TestSelfReflectStopHook(unittest.TestCase):
         proc = subprocess.run(
             [sys.executable, str(REFLECT_HOOK)],
             input="",
-            capture_output=True, text=True, timeout=10,
+            capture_output=True, text=True, encoding="utf-8", timeout=10,
             cwd=self.tmpdir,
             env=build_hook_env(),
         )
