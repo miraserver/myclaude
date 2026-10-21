@@ -20,3 +20,6 @@
 *.zip binary
 *.gz binary
 *.tar binary
+# cmd.exe parses batch files reliably only with CRLF
+*.bat text eol=crlf
+*.cmd text eol=crlf

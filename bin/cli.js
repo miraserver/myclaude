@@ -831,14 +831,19 @@ async function mergeDir(src, installDir, force) {
   return installed;
 }
 
+function installScriptCommand(repoRoot, platform = process.platform) {
+  return platform === "win32"
+    ? { cmd: "cmd.exe", args: ["/c", path.join(repoRoot, "install.bat")] }
+    : { cmd: "bash", args: [path.join(repoRoot, "install.sh")] };
+}
+
 function runInstallSh(repoRoot, installDir, tag) {
   if (skipWrapper || process.env.MYCLAUDE_SKIP_WRAPPER === "1") {
     process.stdout.write("Skipping codeagent-wrapper install.\n");
     return Promise.resolve();
   }
   return new Promise((resolve, reject) => {
-    const cmd = process.platform === "win32" ? "cmd.exe" : "bash";
-    const args = process.platform === "win32" ? ["/c", "install.bat"] : ["install.sh"];
+    const { cmd, args } = installScriptCommand(repoRoot);
     const env = { ...process.env, INSTALL_DIR: installDir };
     if (tag) env.CODEAGENT_WRAPPER_VERSION = tag;
     const p = spawn(cmd, args, {
@@ -1419,6 +1424,7 @@ async function main() {
 }
 
 module.exports = {
+  installScriptCommand,
   normalizeHookCommand,
   hookEntryKey,
   entryPointsInto,

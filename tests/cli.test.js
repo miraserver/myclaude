@@ -9,6 +9,7 @@ const { test } = require("node:test");
 const { spawnSync } = require("node:child_process");
 const vm = require("node:vm");
 const {
+  installScriptCommand,
   normalizeHookCommand,
   hookEntryKey,
   entryPointsInto,
@@ -24,6 +25,37 @@ const {
 const doHooks = require("../skills/do/hooks/hooks.json");
 const globalHooks = require("../hooks/hooks.json");
 const cliPath = path.resolve(__dirname, "../bin/cli.js");
+
+for (const [platform, cmd, script] of [
+  ["win32", "cmd.exe", "install.bat"],
+  ["linux", "bash", "install.sh"],
+]) {
+  test(`installScriptCommand uses an absolute script path for ${platform}`, () => {
+    const repoRoot = path.resolve(__dirname, "..");
+    const command = installScriptCommand(repoRoot, platform);
+    assert.deepEqual(command, {
+      cmd,
+      args: platform === "win32" ? ["/c", path.join(repoRoot, script)] : [path.join(repoRoot, script)],
+    });
+    const scriptPath = command.args[command.args.length - 1];
+    assert.equal(path.isAbsolute(scriptPath), true);
+    assert.equal(path.dirname(scriptPath), repoRoot);
+  });
+}
+
+test("Windows installer runs with current-directory executable lookup disabled", {
+  skip: process.platform !== "win32",
+}, (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "myclaude-install-"));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  fs.writeFileSync(path.join(dir, "install.bat"), "@echo off\r\nexit /b 0\r\n");
+  const { cmd, args } = installScriptCommand(dir);
+  const result = spawnSync(cmd, args, {
+    cwd: dir,
+    env: { ...process.env, NoDefaultCurrentDirectoryInExePath: "1" },
+  });
+  assert.equal(result.status, 0, result.error?.message || result.stderr?.toString());
+});
 
 function fixture(t, settings = {}) {
   const installDir = fs.mkdtempSync(path.join(os.tmpdir(), "myclaude-cli-"));
