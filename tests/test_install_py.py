@@ -39,6 +39,20 @@ class InstallerJsonTests(unittest.TestCase):
     def read_json(self, path):
         return json.loads(path.read_text(encoding="utf-8-sig"))
 
+    def test_wrapper_path_is_platform_specific(self):
+        with mock.patch.object(installer.sys, "platform", "win32"), mock.patch.dict(
+            "os.environ", {"USERPROFILE": str(self.root)}
+        ):
+            self.assertEqual(
+                installer._wrapper_bin_path(self.root),
+                self.root / "bin" / "codeagent-wrapper.exe",
+            )
+        with mock.patch.object(installer.sys, "platform", "linux"):
+            self.assertEqual(
+                installer._wrapper_bin_path(self.root),
+                self.root / "bin" / "codeagent-wrapper",
+            )
+
     def assert_corrupt_unchanged(self, path, action):
         path.parent.mkdir(parents=True, exist_ok=True)
         for content in (b'{"user": true,', b'\xef\xbb\xbf{"user":', b'\xff'):

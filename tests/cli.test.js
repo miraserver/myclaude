@@ -15,6 +15,9 @@ const {
   readInstalledModuleNamesFromStatus,
   detectInstalledModuleNames,
   installScriptCommand,
+  wrapperBinPath,
+  resolveInstallDir,
+  printPostInstallInfo,
   normalizeHookCommand,
   hookEntryKey,
   entryPointsInto,
@@ -47,6 +50,154 @@ for (const [platform, cmd, script] of [
     assert.equal(path.dirname(scriptPath), repoRoot);
   });
 }
+
+test("wrapperBinPath uses the platform-specific wrapper location", () => {
+  assert.equal(wrapperBinPath("C:\\install", "win32", "C:\\Users\\tester"),
+    path.win32.join("C:\\Users\\tester", "bin", "codeagent-wrapper.exe"));
+  for (const platform of ["linux", "darwin"]) {
+    assert.equal(wrapperBinPath("/install", platform, "/home/tester"),
+      path.join("/install", "bin", "codeagent-wrapper"));
+  }
+});
+
+test("relative install directory is resolved against the current directory", () => {
+  const cwd = path.join(os.tmpdir(), "myclaude-cwd");
+  assert.equal(resolveInstallDir("relative/install", cwd), path.resolve(cwd, "relative/install"));
+  assert.equal(path.isAbsolute(resolveInstallDir("relative/install", cwd)), true);
+});
+
+test("post-install check finds a wrapper at the platform helper path", (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "myclaude-wrapper-check-"));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const oldUserProfile = process.env.USERPROFILE;
+  const oldHome = process.env.HOME;
+  const oldPath = process.env.PATH;
+  process.env.HOME = root;
+  if (process.platform === "win32") process.env.USERPROFILE = root;
+  const installDir = path.join(root, "install");
+  const wrapper = wrapperBinPath(installDir);
+  fs.mkdirSync(path.dirname(wrapper), { recursive: true });
+  if (process.platform === "win32") fs.copyFileSync(process.execPath, wrapper);
+  else {
+    fs.writeFileSync(wrapper, "#!/bin/sh\necho test-wrapper 1.0\n");
+    fs.chmodSync(wrapper, 0o755);
+  }
+  process.env.PATH = path.dirname(wrapper);
+  t.after(() => {
+    if (oldUserProfile === undefined) delete process.env.USERPROFILE;
+    else process.env.USERPROFILE = oldUserProfile;
+    if (oldHome === undefined) delete process.env.HOME;
+    else process.env.HOME = oldHome;
+    process.env.PATH = oldPath;
+  });
+  let output = "";
+  const write = process.stdout.write;
+  process.stdout.write = (value) => { output += value; return true; };
+  try { printPostInstallInfo(installDir); }
+  finally { process.stdout.write = write; }
+  assert.match(output, /codeagent-wrapper: (test-wrapper 1\.0|v\d+\.\d+\.\d+)/);
+  assert.match(output, /PATH: .* ✓/);
+});
+
+test("post-install PATH comparison handles Windows casing and Unix realpath fallback", (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "myclaude-path-check-"));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  for (const platform of ["win32", "linux"]) {
+    for (const realpathFails of [false, true]) {
+      const pathApi = platform === "win32" ? path.win32 : path.posix;
+      const home = platform === "win32" ? "C:\\Temp\\Profile"
+        : root.replace(/\\/g, "/").replace(/^([A-Za-z]):/, "/$1");
+      const installDir = pathApi.join(home, "install");
+      const binDir = platform === "win32" ? pathApi.join(home, "bin") : pathApi.join(installDir, "bin");
+      let output = "";
+      let realpathCalls = 0;
+      const sandbox = {
+        module: { exports: {} },
+        require: (name) => {
+          if (name === "path") return pathApi;
+          if (name === "os") return { homedir: () => home };
+          if (name === "fs") return { realpathSync: (value) => {
+            realpathCalls++;
+            if (realpathFails) throw new Error("path missing");
+            return value === "/alias" ? binDir : value;
+          } };
+          if (name === "child_process") return { spawnSync: () => ({ status: 1 }) };
+          return require(name);
+        },
+        process: {
+          platform,
+          env: { HOME: root, USERPROFILE: root, PATH: platform === "win32"
+            ? binDir.toUpperCase() + "\\." : realpathFails ? binDir : "/alias" },
+          stdout: { write: (value) => { output += value; } },
+        },
+      };
+      vm.runInNewContext(fs.readFileSync(cliPath, "utf8"), sandbox);
+      sandbox.module.exports.printPostInstallInfo(installDir);
+      assert.match(output, /PATH: .* ✓/, `${platform}, realpathFails=${realpathFails}`);
+      assert.equal(realpathCalls, platform === "win32" ? 0 : realpathFails ? 1 : 2);
+    }
+  }
+});
+
+test("offline wrapper install skips the installer process", async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "myclaude-offline-wrapper-"));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  let output = "";
+  const sandbox = {
+    module: { exports: {} },
+    require: (name) => name === "child_process" ? {
+      spawn: () => { throw new Error("offline mode must not spawn installer"); },
+      spawnSync,
+    } : require(name),
+    process: { platform: process.platform, env: { ...process.env }, stdout: { write: (s) => { output += s; } } },
+  };
+  vm.runInNewContext(fs.readFileSync(cliPath, "utf8") +
+    "\nmodule.exports.testRunInstallSh = runInstallSh;\n", sandbox);
+  await sandbox.module.exports.testRunInstallSh(root, path.join(root, "install"), null, true);
+  assert.equal(output, "Offline mode: skipping codeagent-wrapper download.\n");
+});
+
+test("offline install selection continues without spawning the wrapper installer", async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "myclaude-offline-install-"));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  let output = "";
+  const sandbox = {
+    module: { exports: {} },
+    __dirname: path.dirname(cliPath),
+    require: (name) => name === "child_process" ? {
+      spawn: () => { throw new Error("offline mode must not spawn installer"); },
+      spawnSync,
+    } : require(name),
+    process: { platform: process.platform, env: { ...process.env }, stdout: { write: (s) => { output += s; } } },
+  };
+  vm.runInNewContext(fs.readFileSync(cliPath, "utf8") +
+    "\nmodule.exports.testInstallSelected = installSelected;\n", sandbox);
+  const installDir = path.join(root, "install");
+  await sandbox.module.exports.testInstallSelected(
+    [{ kind: "wrapper", id: "codeagent-wrapper" }], null, {}, installDir, false, false, true
+  );
+  assert.match(output, /Offline mode: skipping codeagent-wrapper download\./);
+  assert.equal(fs.existsSync(path.join(installDir, "bin", "codeagent-wrapper")), false);
+});
+
+test("offline CLI update skips wrapper process without --skip-wrapper", (t) => {
+  const f = fixture(t);
+  upsertModuleStatus(f.installDir, { module: "do" });
+  const env = { ...process.env };
+  delete env.MYCLAUDE_SKIP_WRAPPER;
+  const result = spawnSync(process.execPath, [cliPath, "--update", "--offline",
+    "--install-dir", f.installDir], { encoding: "utf8", timeout: 10000, env });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /Offline mode: skipping codeagent-wrapper download\./);
+  assert.equal(fs.existsSync(path.join(f.installDir, "bin", "codeagent-wrapper")), false);
+});
+
+test("install.bat builds latest and tagged release URLs", () => {
+  const source = fs.readFileSync(path.resolve(__dirname, "../install.bat"), "utf8");
+  assert.doesNotMatch(source, /releases\/%VERSION%\/download/);
+  assert.match(source, /releases\/latest\/download\/%BINARY_NAME%/);
+  assert.match(source, /releases\/download\/%VERSION%\/%BINARY_NAME%/);
+});
 
 test("Windows installer runs with current-directory executable lookup disabled", {
   skip: process.platform !== "win32",

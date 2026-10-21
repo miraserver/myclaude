@@ -3,14 +3,22 @@ setlocal enabledelayedexpansion
 
 set "EXIT_CODE=0"
 set "REPO=miraserver/myclaude"
-set "VERSION=latest"
+if defined CODEAGENT_WRAPPER_VERSION (
+    set "VERSION=%CODEAGENT_WRAPPER_VERSION%"
+) else (
+    set "VERSION=latest"
+)
 set "OS=windows"
 
 call :detect_arch
 if errorlevel 1 goto :fail
 
 set "BINARY_NAME=codeagent-wrapper-%OS%-%ARCH%.exe"
-set "URL=https://github.com/%REPO%/releases/%VERSION%/download/%BINARY_NAME%"
+if /I "%VERSION%"=="latest" (
+    set "URL=https://github.com/%REPO%/releases/latest/download/%BINARY_NAME%"
+) else (
+    set "URL=https://github.com/%REPO%/releases/download/%VERSION%/%BINARY_NAME%"
+)
 set "TEMP_FILE=%TEMP%\codeagent-wrapper-%ARCH%-%RANDOM%.exe"
 set "DEST_DIR=%USERPROFILE%\bin"
 set "DEST=%DEST_DIR%\codeagent-wrapper.exe"
@@ -91,6 +99,7 @@ set "CHECK_SYS_EXP=;!SYS_PATH_EXP_CLEAN!;"
 
 rem Check if already present (literal or expanded, with/without trailing backslash)
 set "ALREADY_IN_USERPATH=0"
+set "PATH_UPDATED=0"
 echo(!CHECK_USER_RAW! | findstr /I /C:"!SEARCH_LIT!" /C:"!SEARCH_LIT2!" >nul && set "ALREADY_IN_USERPATH=1"
 if "!ALREADY_IN_USERPATH!"=="0" (
     echo(!CHECK_USER_EXP! | findstr /I /C:"!SEARCH_EXP!" /C:"!SEARCH_EXP2!" >nul && set "ALREADY_IN_USERPATH=1"
@@ -118,8 +127,9 @@ if "!ALREADY_IN_USERPATH!"=="1" (
         )
         rem Persist update to HKCU\Environment\Path (user scope)
         rem Use reg add instead of setx to avoid 1024-character limit
-        echo(!USER_PATH_NEW! | findstr /C:"\"" /C:"!" >nul
-        if not errorlevel 1 (
+        set "PATH_UNSAFE=0"
+        for /f %%A in ('powershell -NoProfile -Command "$p=Get-ItemPropertyValue HKCU:\Environment Path -ErrorAction SilentlyContinue; if ($p -and ($p.Contains([char]33) -or $p.Contains([char]34))) {Write-Output 1} else {Write-Output 0}"') do set "PATH_UNSAFE=%%A"
+        if "!PATH_UNSAFE!"=="1" (
             echo WARNING: Your PATH contains quotes or exclamation marks that may cause issues.
             echo Skipping automatic PATH update. Please add %%USERPROFILE%%\bin to your PATH manually.
         ) else (
@@ -128,16 +138,13 @@ if "!ALREADY_IN_USERPATH!"=="1" (
                 echo WARNING: Failed to append %%USERPROFILE%%\bin to your user PATH.
             ) else (
                 echo Added %%USERPROFILE%%\bin to your user PATH.
+                set "PATH_UPDATED=1"
             )
         )
     )
 )
 
-rem Update current session PATH so codeagent-wrapper is immediately available
-set "CURPATH=;%PATH%;"
-set "CURPATH_CLEAN=!CURPATH:"=!"
-echo(!CURPATH_CLEAN! | findstr /I /C:"!SEARCH_EXP!" /C:"!SEARCH_EXP2!" /C:"!SEARCH_LIT!" /C:"!SEARCH_LIT2!" >nul
-if errorlevel 1 set "PATH=!DEST_DIR!;!PATH!"
+if "!PATH_UPDATED!"=="1" echo Open a new terminal for the PATH change to take effect.
 
 goto :cleanup
 

@@ -23,6 +23,18 @@ except ImportError:  # pragma: no cover
     jsonschema = None
 
 DEFAULT_INSTALL_DIR = "~/.claude"
+
+
+def _wrapper_bin_path(install_dir: Path) -> Path:
+    if sys.platform == "win32":
+        return (
+            Path(os.environ.get("USERPROFILE") or Path.home())
+            / "bin"
+            / "codeagent-wrapper.exe"
+        )
+    return install_dir / "bin" / "codeagent-wrapper"
+
+
 SETTINGS_FILE = "settings.json"
 WRAPPER_REQUIRED_MODULES = {"do", "omo"}
 
@@ -1252,7 +1264,7 @@ def print_post_install_info(ctx: Dict[str, Any]) -> None:
     install_dir = ctx["install_dir"]
 
     # Check codeagent-wrapper version
-    wrapper_bin = install_dir / "bin" / "codeagent-wrapper"
+    wrapper_bin = _wrapper_bin_path(install_dir)
     wrapper_version = None
     try:
         result = subprocess.run(
@@ -1265,13 +1277,17 @@ def print_post_install_info(ctx: Dict[str, Any]) -> None:
         pass
 
     # Check PATH
-    bin_dir = str(install_dir / "bin")
+    bin_dir = str(_wrapper_bin_path(install_dir).parent)
     env_path = os.environ.get("PATH", "")
-    path_ok = any(
-        os.path.realpath(p) == os.path.realpath(bin_dir)
-        if os.path.exists(p) else p == bin_dir
-        for p in env_path.split(os.pathsep)
-    )
+    if sys.platform == "win32":
+        normalize = lambda value: os.path.normcase(os.path.normpath(value))
+        path_ok = any(normalize(p) == normalize(bin_dir) for p in env_path.split(os.pathsep))
+    else:
+        path_ok = any(
+            os.path.realpath(p) == os.path.realpath(bin_dir)
+            if os.path.exists(p) else p == bin_dir
+            for p in env_path.split(os.pathsep)
+        )
 
     # Check backend CLIs
     backends = ["codex", "claude", "gemini", "opencode"]

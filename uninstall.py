@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import shutil
 import sys
@@ -13,6 +14,29 @@ from typing import Any, Dict, List, Optional, Set
 
 DEFAULT_INSTALL_DIR = "~/.claude"
 SETTINGS_FILE = "settings.json"
+
+
+def _wrapper_bin_path(install_dir: Path) -> Path:
+    if sys.platform == "win32":
+        return (
+            Path(os.environ.get("USERPROFILE") or Path.home())
+            / "bin"
+            / "codeagent-wrapper.exe"
+        )
+    return install_dir / "bin" / "codeagent-wrapper"
+
+
+def _remove_wrapper(wrapper: Path, removed: List[str]) -> None:
+    try:
+        wrapper.unlink()
+    except FileNotFoundError:
+        return
+    except OSError as e:
+        print(f"  Warning: Failed to remove {wrapper}: {e}", file=sys.stderr)
+    else:
+        print(f"  ✓ Removed {wrapper}")
+        removed.append(str(wrapper))
+
 
 # Files created by installer itself (not by modules)
 INSTALLER_FILES = ["install.log", "installed_modules.json", "installed_modules.json.bak"]
@@ -117,6 +141,12 @@ def unmerge_hooks_from_settings(module_name: str, install_dir: Path) -> bool:
     return modified
 
 
+def _installs_wrapper(op: Dict[str, Any]) -> bool:
+    return op.get("type") == "run_command" and any(
+        script in op.get("command", "") for script in ("install.sh", "install.bat")
+    )
+
+
 def get_module_files(module_name: str, config: Dict[str, Any]) -> Set[str]:
     """Extract files/dirs that a module installs based on config.json operations."""
     files: Set[str] = set()
@@ -139,12 +169,10 @@ def get_module_files(module_name: str, config: Dict[str, Any]) -> Set[str]:
                 for subdir in source_path.iterdir():
                     if subdir.is_dir():
                         files.add(subdir.name)
-        elif op_type == "run_command":
+        elif _installs_wrapper(op):
             # install.sh installs bin/codeagent-wrapper
-            cmd = op.get("command", "")
-            if "install.sh" in cmd or "install.bat" in cmd:
-                files.add("bin/codeagent-wrapper")
-                files.add("bin")
+            files.add("bin/codeagent-wrapper")
+            files.add("bin")
 
     return files
 
@@ -232,9 +260,20 @@ def main(argv: Optional[List[str]] = None) -> int:
     for module_name in selected:
         files_to_remove.update(get_module_files(module_name, config))
 
+    wrapper_required_by = sorted(
+        name for name in installed_modules
+        if name not in selected and any(
+            _installs_wrapper(op)
+            for op in config.get("modules", {}).get(name, {}).get("operations", [])
+        )
+    ) if args.module and not args.purge else []
+    # Handle both manifest entries through the platform-specific helper only.
+    files_to_remove.discard("bin/codeagent-wrapper")
+
     # Add installer files if removing all modules
     if set(selected) == set(installed_modules.keys()):
         files_to_remove.update(INSTALLER_FILES)
+        files_to_remove.add("bin")
 
     # Show what will be removed
     print(f"Install directory: {install_dir}")
@@ -264,33 +303,38 @@ def main(argv: Optional[List[str]] = None) -> int:
     removed: List[str] = []
 
     if args.purge:
-        shutil.rmtree(install_dir)
-        print(f"  ✓ Removed {install_dir}")
-        removed.append(str(install_dir))
+        _remove_wrapper(_wrapper_bin_path(install_dir), removed)
+
+        def warn_removal_failure(function, path, exc_info):
+            print(f"  Warning: Failed to remove {path}: {exc_info[1]}", file=sys.stderr)
+
+        shutil.rmtree(install_dir, onerror=warn_removal_failure)
+        if not install_dir.exists():
+            print(f"  ✓ Removed {install_dir}")
+            removed.append(str(install_dir))
     else:
         # Remove files/dirs in reverse order (files before parent dirs)
         for item in sorted(files_to_remove, key=lambda x: x.count("/"), reverse=True):
             path = install_dir / item
+            if item == "bin":
+                if wrapper_required_by:
+                    print(f"Keeping codeagent-wrapper (still required by: {', '.join(wrapper_required_by)})")
+                else:
+                    _remove_wrapper(_wrapper_bin_path(install_dir), removed)
+                try:
+                    if path.exists() and path.is_dir() and not any(path.iterdir()):
+                        path.rmdir()
+                        print(f"  ✓ Removed empty bin/")
+                except OSError as e:
+                    print(f"  ✗ Failed to remove {path}: {e}", file=sys.stderr)
+                continue
             if not path.exists():
                 continue
             try:
                 if path.is_dir():
-                    # Only remove if empty or if it's a known module dir
-                    if item in ("bin",):
-                        # For bin, only remove codeagent-wrapper
-                        wrapper = path / "codeagent-wrapper"
-                        if wrapper.exists():
-                            wrapper.unlink()
-                            print(f"  ✓ Removed bin/codeagent-wrapper")
-                            removed.append("bin/codeagent-wrapper")
-                        # Remove bin if empty
-                        if path.exists() and not any(path.iterdir()):
-                            path.rmdir()
-                            print(f"  ✓ Removed empty bin/")
-                    else:
-                        shutil.rmtree(path)
-                        print(f"  ✓ Removed {item}/")
-                        removed.append(item)
+                    shutil.rmtree(path)
+                    print(f"  ✓ Removed {item}/")
+                    removed.append(item)
                 else:
                     path.unlink()
                     print(f"  ✓ Removed {item}")
@@ -320,7 +364,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             print(f"  ✓ Removed empty install directory")
 
     # Clean shell configs
-    for rc_name in (".bashrc", ".zshrc"):
+    for rc_name in (() if wrapper_required_by else (".bashrc", ".zshrc")):
         rc_file = Path.home() / rc_name
         if cleanup_shell_config(rc_file, bin_dir):
             print(f"  ✓ Cleaned PATH from {rc_name}")

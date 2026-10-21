@@ -210,6 +210,16 @@ function expandHome(p) {
   return p;
 }
 
+function resolveInstallDir(value, cwd = process.cwd()) {
+  return path.resolve(cwd, expandHome(value));
+}
+
+function wrapperBinPath(installDir, platform = process.platform, home = os.homedir()) {
+  return platform === "win32"
+    ? path.win32.join(home, "bin", "codeagent-wrapper.exe")
+    : path.join(installDir, "bin", "codeagent-wrapper");
+}
+
 function readJsonFile(filePath) {
   const content = fs.readFileSync(filePath, "utf8").replace(/^\uFEFF/, "");
   try {
@@ -532,7 +542,7 @@ async function detectInstalledModuleNames(config, repoRoot, installDir) {
   return installed.sort();
 }
 
-async function updateInstalledModules(installDir, tag, config, dryRun, explicitForce = false) {
+async function updateInstalledModules(installDir, tag, config, dryRun, explicitForce = false, offline = false) {
   validateInstallJson(installDir);
   const mods = (config && config.modules) || {};
   if (!Object.keys(mods).length) throw new Error("No modules found in config.json");
@@ -584,14 +594,14 @@ async function updateInstalledModules(installDir, tag, config, dryRun, explicitF
     async function ensureWrapperInstalled() {
       if (installState.wrapperInstalled) return;
       process.stdout.write("Installing codeagent-wrapper...\n");
-      await runInstallSh(repoRoot, installDir, tag);
+      await runInstallSh(repoRoot, installDir, tag, offline);
       installState.wrapperInstalled = true;
     }
 
     for (const name of toUpdate) {
       if (WRAPPER_REQUIRED_MODULES.has(name)) await ensureWrapperInstalled();
       process.stdout.write(`Updating module: ${name}\n`);
-      const r = await applyModule(name, config, repoRoot, installDir, true, tag, installState, explicitForce);
+      const r = await applyModule(name, config, repoRoot, installDir, true, tag, installState, explicitForce, offline);
       upsertModuleStatus(installDir, r);
     }
   } finally {
@@ -868,7 +878,11 @@ function installScriptCommand(repoRoot, platform = process.platform) {
     : { cmd: "bash", args: [path.join(repoRoot, "install.sh")] };
 }
 
-function runInstallSh(repoRoot, installDir, tag) {
+function runInstallSh(repoRoot, installDir, tag, offline = false) {
+  if (offline) {
+    process.stdout.write("Offline mode: skipping codeagent-wrapper download.\n");
+    return Promise.resolve();
+  }
   if (skipWrapper || process.env.MYCLAUDE_SKIP_WRAPPER === "1") {
     process.stdout.write("Skipping codeagent-wrapper install.\n");
     return Promise.resolve();
@@ -960,7 +974,7 @@ function mergeModuleAgentsToModels(moduleName, mod, repoRoot) {
   return modified;
 }
 
-async function applyModule(moduleName, config, repoRoot, installDir, force, tag, installState, explicitForce = force) {
+async function applyModule(moduleName, config, repoRoot, installDir, force, tag, installState, explicitForce = force, offline = false) {
   validateInstallJson(installDir);
   const mod = config && config.modules && config.modules[moduleName];
   if (!mod) throw new Error(`Unknown module: ${moduleName}`);
@@ -995,7 +1009,7 @@ async function applyModule(moduleName, config, repoRoot, installDir, force, tag,
           result.operations.push({ type, status: "success", skipped: true });
           continue;
         }
-        await runInstallSh(repoRoot, installDir, tag);
+        await runInstallSh(repoRoot, installDir, tag, offline);
         if (installState) installState.wrapperInstalled = true;
       } else {
         throw new Error(`Unsupported operation type: ${type}`);
@@ -1214,7 +1228,7 @@ function printPostInstallInfo(installDir) {
   process.stdout.write("\n");
 
   // Check codeagent-wrapper version
-  const wrapperBin = path.join(installDir, "bin", "codeagent-wrapper");
+  const wrapperBin = wrapperBinPath(installDir);
   let wrapperVersion = null;
   try {
     const r = spawnSync(wrapperBin, ["--version"], { timeout: 5000 });
@@ -1224,11 +1238,19 @@ function printPostInstallInfo(installDir) {
   } catch {}
 
   // Check PATH
-  const binDir = path.join(installDir, "bin");
+  const binDir = path.dirname(wrapperBinPath(installDir));
   const envPath = process.env.PATH || "";
-  const pathOk = envPath.split(path.delimiter).some((p) => {
-    try { return fs.realpathSync(p) === fs.realpathSync(binDir); } catch { return p === binDir; }
-  });
+  const pathsEqual = (left, right) => {
+    if (process.platform === "win32") {
+      return path.resolve(left).toLowerCase() === path.resolve(right).toLowerCase();
+    }
+    try {
+      return fs.realpathSync(left) === fs.realpathSync(right);
+    } catch {
+      return left === right;
+    }
+  };
+  const pathOk = envPath.split(path.delimiter).some((p) => pathsEqual(p, binDir));
 
   // Check backend CLIs
   const whichCmd = process.platform === "win32" ? "where" : "which";
@@ -1254,7 +1276,7 @@ function printPostInstallInfo(installDir) {
   process.stdout.write("\n");
 }
 
-async function installSelected(picks, tag, config, installDir, force, dryRun) {
+async function installSelected(picks, tag, config, installDir, force, dryRun, offline = false) {
   validateInstallJson(installDir);
   const needRepo = picks.some((p) => p.kind !== "wrapper");
   const needWrapper = picks.some((p) => p.kind === "wrapper");
@@ -1295,7 +1317,7 @@ async function installSelected(picks, tag, config, installDir, force, dryRun) {
     async function ensureWrapperInstalled() {
       if (installState.wrapperInstalled) return;
       process.stdout.write("Installing codeagent-wrapper...\n");
-      await runInstallSh(repoRoot, installDir, tag);
+      await runInstallSh(repoRoot, installDir, tag, offline);
       installState.wrapperInstalled = true;
     }
 
@@ -1314,7 +1336,9 @@ async function installSelected(picks, tag, config, installDir, force, dryRun) {
           installDir,
           force,
           tag,
-          installState
+          installState,
+          force,
+          offline
         );
         upsertModuleStatus(installDir, r);
         continue;
@@ -1345,7 +1369,7 @@ async function main() {
     return;
   }
 
-  const installDir = expandHome(args.installDir);
+  const installDir = resolveInstallDir(args.installDir);
   if (args.command !== "install" && args.command !== "uninstall") {
     throw new Error(`Unknown command: ${args.command}`);
   }
@@ -1447,7 +1471,7 @@ async function main() {
   if (!skills.length) skills = listLocalSkills();
 
   if (args.update) {
-    await updateInstalledModules(installDir, tag, config, args.dryRun, args.force);
+    await updateInstalledModules(installDir, tag, config, args.dryRun, args.force, args.offline);
     process.stdout.write("Done.\n");
     return;
   }
@@ -1465,7 +1489,7 @@ async function main() {
     return;
   }
 
-  await installSelected(picks, tag, config, installDir, args.force, args.dryRun);
+  await installSelected(picks, tag, config, installDir, args.force, args.dryRun, args.offline);
   process.stdout.write("Done.\n");
 }
 
@@ -1476,6 +1500,9 @@ module.exports = {
   readInstalledModuleNamesFromStatus,
   detectInstalledModuleNames,
   installScriptCommand,
+  wrapperBinPath,
+  resolveInstallDir,
+  printPostInstallInfo,
   normalizeHookCommand,
   hookEntryKey,
   entryPointsInto,
