@@ -37,11 +37,31 @@
       "properties": {
         "enabled": { "type": "boolean", "default": false },
         "description": { "type": "string", "minLength": 3 },
+        "agents": {
+          "type": "object",
+          "additionalProperties": { "$ref": "#/$defs/agent_preset" }
+        },
         "operations": {
           "type": "array",
           "minItems": 1,
           "items": { "$ref": "#/$defs/operation" }
         }
+      }
+    },
+    "agent_preset": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "backend": { "type": "string" },
+        "model": { "type": "string" },
+        "reasoning": { "type": "string" },
+        "prompt_file": { "type": "string" },
+        "description": { "type": "string" },
+        "base_url": { "type": "string" },
+        "api_key": { "type": "string" },
+        "yolo": { "type": "boolean" },
+        "allowed_tools": { "type": "array", "items": { "type": "string" } },
+        "disallowed_tools": { "type": "array", "items": { "type": "string" } }
       }
     },
     "operation": {

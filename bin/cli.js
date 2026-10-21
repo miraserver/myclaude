@@ -210,32 +210,43 @@ function expandHome(p) {
   return p;
 }
 
+function readJsonFile(filePath) {
+  const content = fs.readFileSync(filePath, "utf8").replace(/^\uFEFF/, "");
+  try {
+    return JSON.parse(content);
+  } catch (err) {
+    throw new Error(`Invalid JSON in ${filePath}: ${err.message}`);
+  }
+}
+
+function validateInstallJson(installDir) {
+  for (const filePath of [
+    path.join(installDir, "installed_modules.json"),
+    path.join(installDir, "settings.json"),
+    path.join(os.homedir(), ".codeagent", "models.json"),
+  ]) {
+    if (fs.existsSync(filePath)) readJsonFile(filePath);
+  }
+}
+
 function readInstalledModuleNamesFromStatus(installDir) {
   const p = path.join(installDir, "installed_modules.json");
   if (!fs.existsSync(p)) return null;
-  try {
-    const json = JSON.parse(fs.readFileSync(p, "utf8"));
-    const modules = json && json.modules;
-    if (!modules || typeof modules !== "object" || Array.isArray(modules)) return null;
-    return Object.keys(modules)
-      .filter((k) => typeof k === "string" && k.trim())
-      .sort();
-  } catch {
-    return null;
-  }
+  const json = readJsonFile(p);
+  const modules = json && json.modules;
+  if (!modules || typeof modules !== "object" || Array.isArray(modules)) return null;
+  return Object.keys(modules)
+    .filter((k) => typeof k === "string" && k.trim())
+    .sort();
 }
 
 function loadInstalledStatus(installDir) {
   const p = path.join(installDir, "installed_modules.json");
   if (!fs.existsSync(p)) return { modules: {} };
-  try {
-    const json = JSON.parse(fs.readFileSync(p, "utf8"));
-    const modules = json && json.modules;
-    if (!modules || typeof modules !== "object" || Array.isArray(modules)) return { modules: {} };
-    return { ...json, modules };
-  } catch {
-    return { modules: {} };
-  }
+  const json = readJsonFile(p);
+  const modules = json && json.modules;
+  if (!modules || typeof modules !== "object" || Array.isArray(modules)) return { modules: {} };
+  return { ...json, modules };
 }
 
 function saveInstalledStatus(installDir, status) {
@@ -264,11 +275,7 @@ function deleteModuleStatus(installDir, moduleName) {
 function loadSettings(installDir) {
   const p = path.join(installDir, "settings.json");
   if (!fs.existsSync(p)) return {};
-  try {
-    return JSON.parse(fs.readFileSync(p, "utf8"));
-  } catch {
-    return {};
-  }
+  return readJsonFile(p);
 }
 
 function saveSettings(installDir, settings) {
@@ -505,7 +512,8 @@ async function detectInstalledModuleNames(config, repoRoot, installDir) {
       const type = op && op.type;
       if (type === "copy_file" || type === "copy_dir") {
         const target = typeof op.target === "string" ? op.target : "";
-        if (target && fs.existsSync(path.join(installDir, target))) {
+        const sharedTarget = ["hooks", "commands", "agents", "skills"].includes(path.normalize(target).replace(/[\\/]+$/, ""));
+        if (target && !sharedTarget && fs.existsSync(path.join(installDir, target))) {
           ok = true;
           break;
         }
@@ -524,7 +532,8 @@ async function detectInstalledModuleNames(config, repoRoot, installDir) {
   return installed.sort();
 }
 
-async function updateInstalledModules(installDir, tag, config, dryRun) {
+async function updateInstalledModules(installDir, tag, config, dryRun, explicitForce = false) {
+  validateInstallJson(installDir);
   const mods = (config && config.modules) || {};
   if (!Object.keys(mods).length) throw new Error("No modules found in config.json");
 
@@ -582,7 +591,7 @@ async function updateInstalledModules(installDir, tag, config, dryRun) {
     for (const name of toUpdate) {
       if (WRAPPER_REQUIRED_MODULES.has(name)) await ensureWrapperInstalled();
       process.stdout.write(`Updating module: ${name}\n`);
-      const r = await applyModule(name, config, repoRoot, installDir, true, tag, installState);
+      const r = await applyModule(name, config, repoRoot, installDir, true, tag, installState, explicitForce);
       upsertModuleStatus(installDir, r);
     }
   } finally {
@@ -813,7 +822,20 @@ async function copyDirRecursive(src, dst, force) {
   }
 }
 
-async function mergeDir(src, installDir, force) {
+async function filesIdentical(src, dst) {
+  try {
+    const [srcBuf, dstBuf] = await Promise.all([
+      fs.promises.readFile(src),
+      fs.promises.readFile(dst),
+    ]);
+    return srcBuf.equals(dstBuf);
+  } catch (err) {
+    if (err.code === "ENOENT" || err.code === "EISDIR") return false;
+    throw err;
+  }
+}
+
+async function mergeDir(src, installDir, force, moduleName, previouslyOwned, explicitForce) {
   const installed = [];
   const subdirs = await fs.promises.readdir(src, { withFileTypes: true });
   for (const d of subdirs) {
@@ -824,8 +846,17 @@ async function mergeDir(src, installDir, force) {
     const entries = await fs.promises.readdir(srcSub, { withFileTypes: true });
     for (const e of entries) {
       if (!e.isFile()) continue;
-      const didCopy = await copyFile(path.join(srcSub, e.name), path.join(dstSub, e.name), force);
-      if (didCopy) installed.push(`${d.name}/${e.name}`);
+      const rel = `${d.name}/${e.name}`;
+      const source = path.join(srcSub, e.name);
+      const target = path.join(dstSub, e.name);
+      const exists = fs.existsSync(target);
+      const identical = exists && await filesIdentical(source, target);
+      if (exists && !previouslyOwned.has(rel) && !identical && !explicitForce) {
+        process.stdout.write(`skipped ${target}: exists and is not owned by ${moduleName} (use --force to overwrite)\n`);
+        continue;
+      }
+      const didCopy = await copyFile(source, target, force);
+      if (didCopy || identical) installed.push(rel);
     }
   }
   return installed;
@@ -895,11 +926,11 @@ function mergeModuleAgentsToModels(moduleName, mod, repoRoot) {
 
   let models;
   if (fs.existsSync(modelsPath)) {
-    models = JSON.parse(fs.readFileSync(modelsPath, "utf8"));
+    models = readJsonFile(modelsPath);
   } else {
     const templatePath = path.join(repoRoot, "templates", "models.json.example");
     if (fs.existsSync(templatePath)) {
-      models = JSON.parse(fs.readFileSync(templatePath, "utf8"));
+      models = readJsonFile(templatePath);
       if (!isPlainObject(models)) models = defaultModelsConfig();
       models.agents = {};
     } else {
@@ -929,7 +960,8 @@ function mergeModuleAgentsToModels(moduleName, mod, repoRoot) {
   return modified;
 }
 
-async function applyModule(moduleName, config, repoRoot, installDir, force, tag, installState) {
+async function applyModule(moduleName, config, repoRoot, installDir, force, tag, installState, explicitForce = force) {
+  validateInstallJson(installDir);
   const mod = config && config.modules && config.modules[moduleName];
   if (!mod) throw new Error(`Unknown module: ${moduleName}`);
   const ops = Array.isArray(mod.operations) ? mod.operations : [];
@@ -939,7 +971,10 @@ async function applyModule(moduleName, config, repoRoot, installDir, force, tag,
     operations: [],
     installed_at: new Date().toISOString(),
   };
-  const mergeDirFiles = [];
+  const status = loadInstalledStatus(installDir);
+  const previous = status.modules[moduleName];
+  const previouslyOwned = new Set(previous && Array.isArray(previous.merge_dir_files) ? previous.merge_dir_files : []);
+  const mergeDirFiles = new Set([...previouslyOwned].filter((rel) => fs.existsSync(path.join(installDir, rel))));
 
   for (const op of ops) {
     const type = op && op.type;
@@ -949,7 +984,8 @@ async function applyModule(moduleName, config, repoRoot, installDir, force, tag,
       } else if (type === "copy_dir") {
         await copyDirRecursive(path.join(repoRoot, op.source), path.join(installDir, op.target), force);
       } else if (type === "merge_dir") {
-        mergeDirFiles.push(...(await mergeDir(path.join(repoRoot, op.source), installDir, force)));
+        const installed = await mergeDir(path.join(repoRoot, op.source), installDir, force, moduleName, previouslyOwned, explicitForce);
+        for (const rel of installed) mergeDirFiles.add(rel);
       } else if (type === "run_command") {
         const cmd = typeof op.command === "string" ? op.command.trim() : "";
         if (cmd !== "bash install.sh") {
@@ -976,7 +1012,7 @@ async function applyModule(moduleName, config, repoRoot, installDir, force, tag,
     }
   }
 
-  if (mergeDirFiles.length) result.merge_dir_files = mergeDirFiles;
+  if (previouslyOwned.size || ops.some((op) => op && op.type === "merge_dir")) result.merge_dir_files = [...mergeDirFiles];
 
   try {
     if (mergeModuleHooks(moduleName, mod, installDir)) {
@@ -984,11 +1020,14 @@ async function applyModule(moduleName, config, repoRoot, installDir, force, tag,
       result.operations.push({ type: "merge_hooks", status: "success" });
     }
   } catch (err) {
+    result.status = "failed";
     result.operations.push({
       type: "merge_hooks",
       status: "failed",
       error: err && err.message ? err.message : String(err),
     });
+    upsertModuleStatus(installDir, result);
+    throw err;
   }
 
   try {
@@ -997,11 +1036,14 @@ async function applyModule(moduleName, config, repoRoot, installDir, force, tag,
       result.operations.push({ type: "merge_agents", status: "success" });
     }
   } catch (err) {
+    result.status = "failed";
     result.operations.push({
       type: "merge_agents",
       status: "failed",
       error: err && err.message ? err.message : String(err),
     });
+    upsertModuleStatus(installDir, result);
+    throw err;
   }
 
   return result;
@@ -1066,6 +1108,7 @@ async function removeCopyDirContents(srcDir, targetDir, dryRun) {
 }
 
 async function uninstallModule(moduleName, config, repoRoot, installDir, dryRun) {
+  validateInstallJson(installDir);
   const mod = config && config.modules && config.modules[moduleName];
   if (!mod) throw new Error(`Unknown module: ${moduleName}`);
   const ops = Array.isArray(mod.operations) ? mod.operations : [];
@@ -1102,7 +1145,7 @@ async function uninstallModule(moduleName, config, repoRoot, installDir, dryRun)
     const source = typeof op.source === "string" ? op.source : "";
     if (!source) continue;
 
-    if (recordedMerge && recordedMerge.length) {
+    if (recordedMerge) {
       for (const rel of recordedMerge) {
         const parts = String(rel).split("/").filter(Boolean);
         if (parts.includes("..")) continue;
@@ -1212,6 +1255,7 @@ function printPostInstallInfo(installDir) {
 }
 
 async function installSelected(picks, tag, config, installDir, force, dryRun) {
+  validateInstallJson(installDir);
   const needRepo = picks.some((p) => p.kind !== "wrapper");
   const needWrapper = picks.some((p) => p.kind === "wrapper");
 
@@ -1307,6 +1351,8 @@ async function main() {
   }
   if (args.list && args.update) throw new Error("Cannot combine --list and --update");
 
+  if (!args.list) validateInstallJson(installDir);
+
   if (args.command === "uninstall") {
     const config = readLocalConfig();
     const repoRoot = repoRootFromHere();
@@ -1401,7 +1447,7 @@ async function main() {
   if (!skills.length) skills = listLocalSkills();
 
   if (args.update) {
-    await updateInstalledModules(installDir, tag, config, args.dryRun);
+    await updateInstalledModules(installDir, tag, config, args.dryRun, args.force);
     process.stdout.write("Done.\n");
     return;
   }
@@ -1424,6 +1470,11 @@ async function main() {
 }
 
 module.exports = {
+  applyModule,
+  upsertModuleStatus,
+  loadInstalledStatus,
+  readInstalledModuleNamesFromStatus,
+  detectInstalledModuleNames,
   installScriptCommand,
   normalizeHookCommand,
   hookEntryKey,

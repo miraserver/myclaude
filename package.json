@@ -17,6 +17,7 @@
     "templates/",
     "codeagent-wrapper/",
     "config.json",
+    "config.schema.json",
     "install.py",
     "install.sh",
     "install.bat",

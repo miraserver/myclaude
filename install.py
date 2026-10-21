@@ -90,11 +90,11 @@ def parse_args(argv: Optional[Iterable[str]] = None) -> argparse.Namespace:
 
 def _load_json(path: Path) -> Any:
     try:
-        with path.open("r", encoding="utf-8") as fh:
+        with path.open("r", encoding="utf-8-sig") as fh:
             return json.load(fh)
     except FileNotFoundError as exc:
         raise FileNotFoundError(f"File not found: {path}") from exc
-    except json.JSONDecodeError as exc:
+    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
         raise ValueError(f"Invalid JSON in {path}: {exc}") from exc
 
 
@@ -113,12 +113,10 @@ def _save_json(path: Path, data: Any) -> None:
 def load_settings(ctx: Dict[str, Any]) -> Dict[str, Any]:
     """Load settings.json from install directory."""
     settings_path = ctx["install_dir"] / SETTINGS_FILE
-    if settings_path.exists():
-        try:
-            return _load_json(settings_path)
-        except (ValueError, FileNotFoundError):
-            return {}
-    return {}
+    try:
+        return _load_json(settings_path)
+    except FileNotFoundError:
+        return {}
 
 
 def save_settings(ctx: Dict[str, Any], settings: Dict[str, Any]) -> None:
@@ -251,13 +249,11 @@ def merge_agents_to_models(module_name: str, agents: Dict[str, Any], ctx: Dict[s
     models_path.parent.mkdir(parents=True, exist_ok=True)
 
     if models_path.exists():
-        with models_path.open("r", encoding="utf-8") as fh:
-            models = json.load(fh)
+        models = _load_json(models_path)
     else:
         template = ctx["config_dir"] / "templates" / "models.json.example"
         if template.exists():
-            with template.open("r", encoding="utf-8") as fh:
-                models = json.load(fh)
+            models = _load_json(template)
             # Clear template agents so modules populate with __module__ tags
             models["agents"] = {}
         else:
@@ -302,8 +298,7 @@ def unmerge_agents_from_models(module_name: str, ctx: Dict[str, Any]) -> None:
     if not models_path.exists():
         return
 
-    with models_path.open("r", encoding="utf-8") as fh:
-        models = json.load(fh)
+    models = _load_json(models_path)
 
     agents = models.get("agents", {})
     to_remove = [
@@ -455,12 +450,10 @@ def list_modules(config: Dict[str, Any]) -> None:
 def load_installed_status(ctx: Dict[str, Any]) -> Dict[str, Any]:
     """Load installed modules status from status file."""
     status_path = Path(ctx["status_file"])
-    if status_path.exists():
-        try:
-            return _load_json(status_path)
-        except (ValueError, FileNotFoundError):
-            return {"modules": {}}
-    return {"modules": {}}
+    try:
+        return _load_json(status_path)
+    except FileNotFoundError:
+        return {"modules": {}}
 
 
 def check_module_installed(name: str, cfg: Dict[str, Any], ctx: Dict[str, Any]) -> bool:
@@ -1224,6 +1217,8 @@ def write_log(entry: Dict[str, Any], ctx: Dict[str, Any]) -> None:
 
 
 def write_status(results: List[Dict[str, Any]], ctx: Dict[str, Any]) -> None:
+    # Refuse to overwrite a corrupt status file, even for a full replacement.
+    load_installed_status(ctx)
     status = {
         "installed_at": datetime.now().isoformat(),
         "modules": {item["module"]: item for item in results},

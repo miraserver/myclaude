@@ -9,6 +9,11 @@ const { test } = require("node:test");
 const { spawnSync } = require("node:child_process");
 const vm = require("node:vm");
 const {
+  applyModule,
+  upsertModuleStatus,
+  loadInstalledStatus,
+  readInstalledModuleNamesFromStatus,
+  detectInstalledModuleNames,
   installScriptCommand,
   normalizeHookCommand,
   hookEntryKey,
@@ -361,11 +366,10 @@ test("parseArgs supports sandbox flags and rejects unknown args", (t) => {
   assert.throws(() => parseArgs(["--unknown"]), /Unknown arg/);
 });
 
-for (const state of ["missing", "empty", "without hooks"]) {
+for (const state of ["missing", "without hooks"]) {
   test("merge handles " + state + " settings.json", (t) => {
     const f = fixture(t, { permissions: { allow: ["Read"] } });
     if (state === "missing") fs.unlinkSync(f.settingsPath);
-    if (state === "empty") fs.writeFileSync(f.settingsPath, "");
     assert.equal(unmergeHooksFromSettings("do", f.installDir, [f.root]), false);
     assert.equal(mergeHooksToSettings("do", doHooks, f.installDir, f.root), true);
     assert.equal(f.read().hooks.Stop.length, 1);
@@ -522,3 +526,349 @@ test("wrapper bypass resolves without spawning for both CLI flag and environment
     assert.equal(output, "Skipping codeagent-wrapper install.\n");
   }
 });
+
+
+test("BOM settings preserve other keys after hook merge", (t) => {
+  const settings = { permissions: { allow: ["Read"] }, theme: "dark" };
+  const f = fixture(t, settings);
+  fs.writeFileSync(f.settingsPath, "\uFEFF" + JSON.stringify(settings));
+  assert.equal(mergeHooksToSettings("do", doHooks, f.installDir, f.root), true);
+  assert.deepEqual(f.read().permissions, settings.permissions);
+  assert.equal(f.read().theme, settings.theme);
+  assert.equal(f.read().hooks.Stop.length, 1);
+});
+
+function invalidJsonError(filePath, content) {
+  let parseError;
+  try { JSON.parse(content); } catch (err) { parseError = err.message; }
+  return (err) => {
+    assert.ok(err instanceof Error);
+    assert.ok(err.message.includes(filePath), err.message);
+    assert.ok(err.message.includes(parseError), err.message);
+    return true;
+  };
+}
+
+for (const content of ["", "{invalid", "\uFEFF{invalid"]) {
+  test("invalid settings throw without changing bytes: " + JSON.stringify(content), (t) => {
+    const f = fixture(t);
+    fs.writeFileSync(f.settingsPath, content);
+    const bytes = fs.readFileSync(f.settingsPath);
+    const check = invalidJsonError(f.settingsPath, content.replace(/^\uFEFF/, ""));
+    assert.throws(() => mergeHooksToSettings("do", doHooks, f.installDir, f.root), check);
+    assert.throws(() => unmergeHooksFromSettings("do", f.installDir), check);
+    assert.deepEqual(fs.readFileSync(f.settingsPath), bytes);
+  });
+}
+
+test("invalid installed status aborts readers, install, and CLI update without changing bytes", async (t) => {
+  const f = fixture(t);
+  const statusPath = path.join(f.installDir, "installed_modules.json");
+  fs.writeFileSync(statusPath, "{invalid");
+  const bytes = fs.readFileSync(statusPath);
+  const check = invalidJsonError(statusPath, "{invalid");
+  assert.throws(() => loadInstalledStatus(f.installDir), check);
+  assert.throws(() => readInstalledModuleNamesFromStatus(f.installDir), check);
+  await assert.rejects(applyModule("test", { modules: { test: { operations: [] } } },
+    f.installDir, f.installDir, false), check);
+  const result = spawnSync(process.execPath, [cliPath, "--update", "--offline", "--skip-wrapper",
+    "--install-dir", f.installDir], { encoding: "utf8", timeout: 10000 });
+  assert.equal(result.status, 1, result.stderr);
+  assert.ok(result.stderr.includes(statusPath), result.stderr);
+  assert.deepEqual(fs.readFileSync(statusPath), bytes);
+});
+
+test("BOM installed status is parsed and other status keys are preserved", (t) => {
+  const f = fixture(t);
+  const statusPath = path.join(f.installDir, "installed_modules.json");
+  fs.writeFileSync(statusPath, "\uFEFF" + JSON.stringify({ custom: true, modules: { essentials: { module: "essentials" } } }));
+  assert.deepEqual(readInstalledModuleNamesFromStatus(f.installDir), ["essentials"]);
+  upsertModuleStatus(f.installDir, { module: "bmad" });
+  assert.equal(loadInstalledStatus(f.installDir).custom, true);
+  assert.deepEqual(readInstalledModuleNamesFromStatus(f.installDir), ["bmad", "essentials"]);
+});
+
+test("invalid models abort agent merge and module install without changing bytes", async (t) => {
+  const f = modelsFixture(t, {});
+  fs.writeFileSync(f.modelsPath, "\uFEFF{invalid");
+  const bytes = fs.readFileSync(f.modelsPath);
+  const check = invalidJsonError(f.modelsPath, "{invalid");
+  assert.throws(() => f.merge({ model: "new-model" }), check);
+  const dir = path.dirname(f.modelsPath);
+  await assert.rejects(applyModule("test", { modules: { test: {
+    agents: { oracle: { model: "new-model" } }, operations: [],
+  } } }, dir, dir, false), check);
+  upsertModuleStatus(dir, { module: "omo" });
+  const result = spawnSync(process.execPath, [cliPath, "--update", "--offline", "--skip-wrapper",
+    "--install-dir", dir], { encoding: "utf8", timeout: 10000 });
+  assert.equal(result.status, 1, result.stderr);
+  assert.ok(result.stderr.includes(f.modelsPath), result.stderr);
+  assert.deepEqual(fs.readFileSync(f.modelsPath), bytes);
+});
+
+test("BOM models preserve other keys during agent merge", (t) => {
+  const f = modelsFixture(t, {});
+  fs.writeFileSync(f.modelsPath, "\uFEFF" + JSON.stringify({ agents: {}, custom: "keep" }));
+  assert.equal(f.merge({ model: "new-model" }), true);
+  assert.equal(f.read().custom, "keep");
+});
+
+test("invalid settings abort module install with the file unchanged", async (t) => {
+  const f = fixture(t);
+  const hookDir = path.join(f.installDir, "source", "hooks");
+  fs.mkdirSync(hookDir, { recursive: true });
+  fs.writeFileSync(path.join(hookDir, "hooks.json"), JSON.stringify(doHooks));
+  fs.writeFileSync(f.settingsPath, "{invalid");
+  const bytes = fs.readFileSync(f.settingsPath);
+  await assert.rejects(applyModule("test", { modules: { test: { operations: [
+    { type: "copy_dir", source: "source", target: "skills/test" },
+  ] } } }, f.installDir, f.installDir, false), invalidJsonError(f.settingsPath, "{invalid"));
+  assert.equal(fs.existsSync(path.join(f.installDir, "skills/test")), false);
+  upsertModuleStatus(f.installDir, { module: "do" });
+  const result = spawnSync(process.execPath, [cliPath, "--update", "--offline", "--skip-wrapper",
+    "--install-dir", f.installDir], { encoding: "utf8", timeout: 10000 });
+  assert.equal(result.status, 1, result.stderr);
+  assert.ok(result.stderr.includes(f.settingsPath), result.stderr);
+  assert.deepEqual(fs.readFileSync(f.settingsPath), bytes);
+  assert.equal(fs.existsSync(path.join(f.installDir, "skills/do")), false);
+});
+
+function runUpdate(installDir, ...args) {
+  const result = spawnSync(process.execPath, [cliPath, "--update", "--offline", "--skip-wrapper",
+    "--install-dir", installDir, ...args], { encoding: "utf8", timeout: 10000 });
+  assert.equal(result.status, 0, result.stderr);
+  return result;
+}
+
+for (const explicitForce of [false, true]) {
+  test("CLI update protects foreign merge files unless explicitly forced: " + explicitForce, async (t) => {
+    const f = fixture(t);
+    const repoRoot = path.resolve(__dirname, "..");
+    const config = require("../config.json");
+    const target = path.join(f.installDir, "commands", "review.md");
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.writeFileSync(target, "my personal review command");
+    upsertModuleStatus(f.installDir, { module: "essentials", merge_dir_files: [] });
+    const result = runUpdate(f.installDir, ...(explicitForce ? ["--force"] : []));
+    const recorded = loadInstalledStatus(f.installDir).modules.essentials.merge_dir_files;
+    if (explicitForce) {
+      assert.deepEqual(fs.readFileSync(target), fs.readFileSync(path.join(repoRoot, "agents/development-essentials/commands/review.md")));
+      assert.ok(recorded.includes("commands/review.md"));
+    } else {
+      assert.equal(fs.readFileSync(target, "utf8"), "my personal review command");
+      assert.equal(recorded.includes("commands/review.md"), false);
+      assert.ok(result.stdout.includes(`skipped ${target}: exists and is not owned by essentials (use --force to overwrite)\n`), result.stdout);
+      await uninstallModule("essentials", config, repoRoot, f.installDir, false);
+      assert.equal(fs.readFileSync(target, "utf8"), "my personal review command");
+    }
+  });
+}
+
+test("owned merge file is overwritten by CLI update", (t) => {
+  const f = fixture(t);
+  const target = path.join(f.installDir, "commands", "review.md");
+  fs.mkdirSync(path.dirname(target), { recursive: true });
+  fs.writeFileSync(target, "old owned version");
+  upsertModuleStatus(f.installDir, { module: "essentials", merge_dir_files: ["commands/review.md"] });
+  runUpdate(f.installDir);
+  assert.deepEqual(fs.readFileSync(target), fs.readFileSync(path.resolve(__dirname, "../agents/development-essentials/commands/review.md")));
+  assert.ok(loadInstalledStatus(f.installDir).modules.essentials.merge_dir_files.includes("commands/review.md"));
+});
+
+test("reinstall without force retains existing ownership including retired source files", async (t) => {
+  const f = fixture(t);
+  const repoRoot = path.join(f.installDir, "source");
+  const source = path.join(repoRoot, "module", "commands");
+  fs.mkdirSync(source, { recursive: true });
+  fs.writeFileSync(path.join(source, "review.md"), "original");
+  const config = { modules: { test: { operations: [{ type: "merge_dir", source: "module" }] } } };
+  const install = () => applyModule("test", config, repoRoot, f.installDir, false);
+  upsertModuleStatus(f.installDir, await install());
+  const commands = path.join(f.installDir, "commands");
+  fs.writeFileSync(path.join(commands, "retired.md"), "previously owned");
+  upsertModuleStatus(f.installDir, { module: "test", merge_dir_files: ["commands/review.md", "commands/retired.md", "commands/deleted.md"] });
+  fs.writeFileSync(path.join(source, "review.md"), "new version");
+  const result = await install();
+  assert.deepEqual(result.merge_dir_files.sort(), ["commands/retired.md", "commands/review.md"]);
+  upsertModuleStatus(f.installDir, result);
+  assert.equal(fs.readFileSync(path.join(commands, "review.md"), "utf8"), "original");
+  await uninstallModule("test", config, repoRoot, f.installDir, false);
+  assert.equal(fs.existsSync(commands), false);
+});
+
+test("identical unowned merge files become owned on update", (t) => {
+  const f = fixture(t);
+  const target = path.join(f.installDir, "commands", "review.md");
+  fs.mkdirSync(path.dirname(target), { recursive: true });
+  fs.copyFileSync(path.resolve(__dirname, "../agents/development-essentials/commands/review.md"), target);
+  upsertModuleStatus(f.installDir, { module: "essentials", merge_dir_files: [] });
+  runUpdate(f.installDir);
+  assert.ok(loadInstalledStatus(f.installDir).modules.essentials.merge_dir_files.includes("commands/review.md"));
+});
+
+test("legacy detection finds differing merge files but update preserves user ownership", async (t) => {
+  const f = fixture(t);
+  const repoRoot = path.resolve(__dirname, "..");
+  const config = require("../config.json");
+  fs.mkdirSync(path.join(f.installDir, "hooks"));
+  fs.writeFileSync(path.join(f.installDir, "hooks", "foreign.py"), "foreign");
+  fs.mkdirSync(path.join(f.installDir, "commands"));
+  const review = path.join(f.installDir, "commands", "review.md");
+  fs.writeFileSync(review, "personal command");
+  const detected = await detectInstalledModuleNames(config, repoRoot, f.installDir);
+  assert.equal(detected.includes("claudekit"), false);
+  assert.equal(detected.includes("essentials"), true);
+  runUpdate(f.installDir);
+  assert.equal(fs.readFileSync(review, "utf8"), "personal command");
+  assert.equal(loadInstalledStatus(f.installDir).modules.essentials.merge_dir_files.includes("commands/review.md"), false);
+});
+
+test("agent prompt files match their module install targets and existing sources", () => {
+  const config = require("../config.json");
+  const template = JSON.parse(fs.readFileSync(path.resolve(__dirname, "../templates/models.json.example"), "utf8"));
+  for (const mod of Object.values(config.modules)) {
+    for (const agent of Object.values(mod.agents || {})) {
+      if (!agent.prompt_file) continue;
+      const op = mod.operations.find((op) =>
+        (op.type === "copy_file" && agent.prompt_file === "~/.claude/" + op.target) ||
+        (op.type === "copy_dir" && agent.prompt_file.startsWith("~/.claude/" + op.target + "/")));
+      assert.ok(op, agent.prompt_file);
+      const suffix = agent.prompt_file.slice(("~/.claude/" + op.target).length);
+      assert.ok(fs.statSync(path.resolve(__dirname, "..", op.source + suffix)).isFile(), agent.prompt_file);
+    }
+  }
+  for (const [name, agent] of Object.entries(config.modules.omo.agents)) {
+    assert.equal(agent.prompt_file, `~/.claude/skills/omo/references/${name}.md`);
+    assert.equal(template.agents[name].prompt_file, agent.prompt_file);
+  }
+});
+
+test("omo old defaults hash refreshes prompts while edited and unmarked entries are preserved", (t) => {
+  const mod = require("../config.json").modules.omo;
+  const agents = {};
+  for (const [name, cfg] of Object.entries(mod.agents)) {
+    const { prompt_file, ...old } = cfg;
+    agents[name] = { ...old, __module__: "omo", __hash__: agentDefaultsHash(old) };
+  }
+  agents.librarian.model = "user-model";
+  delete agents.explore.__module__;
+  const edited = { ...agents.librarian };
+  const unmarked = { ...agents.explore };
+  const f = modelsFixture(t, agents);
+  assert.equal(mergeModuleAgentsToModels("omo", mod, path.resolve(__dirname, "..")), true);
+  const merged = f.read().agents;
+  assert.deepEqual(merged.librarian, edited);
+  assert.deepEqual(merged.explore, unmarked);
+  for (const name of ["oracle", "develop", "frontend-ui-ux-engineer", "document-writer"]) {
+    assert.deepEqual(merged[name], { ...mod.agents[name], __module__: "omo", __hash__: agentDefaultsHash(mod.agents[name]) });
+  }
+});
+
+
+test("an empty ownership record prevents uninstall from adopting skipped files", async (t) => {
+  const f = fixture(t);
+  const source = path.join(f.installDir, "source", "commands");
+  const target = path.join(f.installDir, "commands", "review.md");
+  fs.mkdirSync(source, { recursive: true });
+  fs.mkdirSync(path.dirname(target));
+  fs.writeFileSync(path.join(source, "review.md"), "source");
+  fs.writeFileSync(target, "user content");
+  const config = { modules: { test: { operations: [{ type: "merge_dir", source: "source" }] } } };
+  const result = await applyModule("test", config, f.installDir, f.installDir, true, null, null, false);
+  assert.deepEqual(result.merge_dir_files, []);
+  upsertModuleStatus(f.installDir, result);
+  fs.writeFileSync(target, "source");
+  await uninstallModule("test", config, f.installDir, f.installDir, false);
+  assert.equal(fs.readFileSync(target, "utf8"), "source");
+});
+
+test("missing models use the template and retain its non-agent defaults", (t) => {
+  const f = modelsFixture(t);
+  const repoRoot = path.dirname(path.dirname(f.modelsPath));
+  const templates = path.join(repoRoot, "templates");
+  fs.mkdirSync(templates);
+  fs.writeFileSync(path.join(templates, "models.json.example"), JSON.stringify({
+    default_backend: "custom", backends: { custom: { api_key: "keep" } }, agents: { unrelated: { model: "template" } },
+  }));
+  assert.equal(mergeModuleAgentsToModels("omo", { agents: { oracle: { model: "new" } } }, repoRoot), true);
+  const models = f.read();
+  assert.equal(models.default_backend, "custom");
+  assert.deepEqual(models.backends, { custom: { api_key: "keep" } });
+  assert.deepEqual(Object.keys(models.agents), ["oracle"]);
+});
+
+for (const type of ["copy_dir", "copy_file"]) {
+  test("legacy " + type + " ignores bare shared targets, including trailing separators", async (t) => {
+    const f = fixture(t);
+    const modules = {};
+    for (const target of ["hooks", "commands/", "agents", "skills/"]) {
+      fs.mkdirSync(path.join(f.installDir, target));
+      modules[target] = { operations: [{ type, target, source: "unused" }] };
+    }
+    assert.deepEqual(await detectInstalledModuleNames({ modules }, f.installDir, f.installDir), []);
+    fs.mkdirSync(path.join(f.installDir, "skills", "dedicated"));
+    modules.dedicated = { operations: [{ type, target: "skills/dedicated", source: "unused" }] };
+    assert.deepEqual(await detectInstalledModuleNames({ modules }, f.installDir, f.installDir), ["dedicated"]);
+  });
+}
+
+
+for (const file of ["installed_modules.json", "settings.json", "models.json"]) {
+  test("JSON preflight prevents install/update/uninstall changes for corrupt " + file, async (t) => {
+    const f = fixture(t);
+    const models = modelsFixture(t, {});
+    const source = path.join(f.installDir, "source.txt");
+    const target = path.join(f.installDir, "module.txt");
+    fs.writeFileSync(source, "module content");
+    upsertModuleStatus(f.installDir, { module: "essentials" });
+    const corruptPath = file === "models.json" ? models.modelsPath : path.join(f.installDir, file);
+    fs.writeFileSync(corruptPath, "{invalid");
+    const before = fs.readdirSync(f.installDir).sort();
+    const config = { modules: { test: { operations: [{ type: "copy_file", source: "source.txt", target: "module.txt" }] } } };
+    await assert.rejects(applyModule("test", config, f.installDir, f.installDir, false), invalidJsonError(corruptPath, "{invalid"));
+    assert.equal(fs.existsSync(target), false);
+    for (const args of [[], ["--update"], ["uninstall", "--module", "essentials", "--yes"]]) {
+      const result = spawnSync(process.execPath, [cliPath, ...args, "--offline", "--skip-wrapper",
+        "--install-dir", f.installDir], { encoding: "utf8", timeout: 10000 });
+      assert.equal(result.status, 1, result.stderr);
+      assert.ok(result.stderr.includes(corruptPath), result.stderr);
+      assert.deepEqual(fs.readdirSync(f.installDir).sort(), before);
+      assert.equal(fs.existsSync(path.join(f.installDir, "commands")), false);
+      assert.equal(fs.readFileSync(corruptPath, "utf8"), "{invalid");
+    }
+    fs.writeFileSync(target, "installed module");
+    await assert.rejects(uninstallModule("test", config, f.installDir, f.installDir, false), invalidJsonError(corruptPath, "{invalid"));
+    assert.equal(fs.readFileSync(target, "utf8"), "installed module");
+  });
+}
+
+for (const failure of ["merge_hooks", "merge_agents"]) {
+  test(failure + " failure after copying persists ownership and failed status", async (t) => {
+    const f = fixture(t);
+    const models = modelsFixture(t, {});
+    const source = path.join(f.installDir, "source");
+    fs.mkdirSync(path.join(source, "commands"), { recursive: true });
+    fs.writeFileSync(path.join(source, "commands", "test.md"), "module command");
+    fs.mkdirSync(path.join(source, "hooks"));
+    fs.writeFileSync(path.join(source, "hooks", "hooks.json"), JSON.stringify(doHooks));
+    const config = { modules: { test: {
+      operations: [
+        { type: "merge_dir", source: "source" },
+        { type: "copy_dir", source: "source", target: "skills/test" },
+      ],
+      agents: { oracle: { model: "test-model" } },
+    } } };
+    const failedPath = failure === "merge_hooks" ? f.settingsPath : models.modelsPath;
+    const writeFileSync = fs.writeFileSync;
+    t.mock.method(fs, "writeFileSync", function(filePath, ...args) {
+      if (filePath === failedPath) throw new Error("injected merge write failure");
+      return writeFileSync.call(this, filePath, ...args);
+    });
+    await assert.rejects(applyModule("test", config, f.installDir, f.installDir, false), /injected merge write failure/);
+    assert.equal(fs.readFileSync(path.join(f.installDir, "commands", "test.md"), "utf8"), "module command");
+    const status = loadInstalledStatus(f.installDir).modules.test;
+    assert.equal(status.status, "failed");
+    assert.ok(status.merge_dir_files.includes("commands/test.md"));
+    assert.deepEqual(status.operations.at(-1), { type: failure, status: "failed", error: "injected merge write failure" });
+  });
+}
