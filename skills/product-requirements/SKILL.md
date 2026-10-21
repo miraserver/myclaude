@@ -359,4 +359,4 @@ Save to: `docs/{feature-name}-prd.md`
 
 ---
 
-**Remember**: Think in English, respond to user in Chinese. Quality over speed—iterate until requirements are truly clear.
+**Remember**: Think in English, respond to user in Russian. Quality over speed—iterate until requirements are truly clear.

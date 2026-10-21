@@ -10,7 +10,7 @@ const readline = require("readline");
 const zlib = require("zlib");
 const { spawn, spawnSync } = require("child_process");
 
-const REPO = { owner: "stellarlinkco", name: "myclaude" };
+const REPO = { owner: "miraserver", name: "myclaude" };
 const API_HEADERS = {
   "User-Agent": "myclaude-npx",
   Accept: "application/vnd.github+json",
@@ -64,12 +64,12 @@ function printHelp() {
       "myclaude (npx installer)",
       "",
       "Usage:",
-      "  npx github:stellarlinkco/myclaude",
-      "  npx github:stellarlinkco/myclaude --list",
-      "  npx github:stellarlinkco/myclaude --update",
-      "  npx github:stellarlinkco/myclaude --install-dir ~/.claude --force",
-      "  npx github:stellarlinkco/myclaude uninstall",
-      "  npx github:stellarlinkco/myclaude uninstall --module bmad,do -y",
+      "  npx github:miraserver/myclaude",
+      "  npx github:miraserver/myclaude --list",
+      "  npx github:miraserver/myclaude --update",
+      "  npx github:miraserver/myclaude --install-dir ~/.claude --force",
+      "  npx github:miraserver/myclaude uninstall",
+      "  npx github:miraserver/myclaude uninstall --module bmad,do -y",
       "",
       "Options:",
       "  --install-dir <path>   Default: ~/.claude",

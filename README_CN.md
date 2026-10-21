@@ -2,14 +2,16 @@
 
 [![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](https://www.gnu.org/licenses/agpl-3.0)
 [![Claude Code](https://img.shields.io/badge/Claude-Code-blue)](https://claude.ai/code)
-[![Version](https://img.shields.io/badge/Version-6.x-green)](https://github.com/stellarlinkco/myclaude)
+[![Version](https://img.shields.io/badge/Version-6.x-green)](https://github.com/miraserver/myclaude)
+
+> 本项目是 [stellarlinkco/myclaude](https://github.com/stellarlinkco/myclaude) 的分支，更新了默认模型（claude-opus-5-5 / claude-sonnet-5-5 / gpt-6.1-sol），修复了 `do` 的 Stop/验证关卡，并实现了幂等的钩子安装。与原项目一样，采用 AGPL-3.0 许可证。
 
 > AI 驱动的开发自动化 - 多后端执行架构 (Codex/Claude/Gemini/OpenCode)
 
 ## 快速开始
 
 ```bash
-npx github:stellarlinkco/myclaude
+npx github:miraserver/myclaude
 ```
 
 ## 模块概览
@@ -27,7 +29,7 @@ npx github:stellarlinkco/myclaude
 
 ### 可用技能
 
-可通过 `npx github:stellarlinkco/myclaude --list` 单独安装技能（模块内置技能如 do、omo、sparv 见上表）：
+可通过 `npx github:miraserver/myclaude --list` 单独安装技能（模块内置技能如 do、omo、sparv 见上表）：
 
 | 技能 | 描述 |
 |------|------|
@@ -188,16 +190,16 @@ npx github:stellarlinkco/myclaude
 
 ```bash
 # 交互式安装器（推荐）
-npx github:stellarlinkco/myclaude
+npx github:miraserver/myclaude
 
 # 列出可安装项（module:* / skill:* / codeagent-wrapper）
-npx github:stellarlinkco/myclaude --list
+npx github:miraserver/myclaude --list
 
 # 检测已安装 modules 并从 GitHub 更新
-npx github:stellarlinkco/myclaude --update
+npx github:miraserver/myclaude --update
 
 # 指定安装目录 / 强制覆盖
-npx github:stellarlinkco/myclaude --install-dir ~/.claude --force
+npx github:miraserver/myclaude --install-dir ~/.claude --force
 ```
 
 `--update` 会在目标安装目录（默认 `~/.claude`，优先读取 `installed_modules.json`）检测已安装 modules，并从 GitHub 拉取最新发布版本覆盖更新。
@@ -244,13 +246,13 @@ npx github:stellarlinkco/myclaude --install-dir ~/.claude --force
 **Codex wrapper 未找到：**
 ```bash
 # 选择：codeagent-wrapper
-npx github:stellarlinkco/myclaude
+npx github:miraserver/myclaude
 ```
 
 **模块未加载：**
 ```bash
 cat ~/.claude/installed_modules.json
-npx github:stellarlinkco/myclaude --force
+npx github:miraserver/myclaude --force
 ```
 
 ## FAQ
@@ -261,7 +263,7 @@ npx github:stellarlinkco/myclaude --force
 | Gemini 无法读取 .gitignore 文件 | 从 .gitignore 移除或使用其他后端 |
 | Codex 权限拒绝 | 在 ~/.codex/config.yaml 设置 `approval_policy = "never"` |
 
-更多问题请访问 [GitHub Issues](https://github.com/stellarlinkco/myclaude/issues)。
+更多问题请访问 [GitHub Issues](https://github.com/miraserver/myclaude/issues)。
 
 ## 许可证
 
@@ -273,4 +275,4 @@ AGPL-3.0 - 查看 [LICENSE](LICENSE)
 
 ## 支持
 
-- [GitHub Issues](https://github.com/stellarlinkco/myclaude/issues)
+- [GitHub Issues](https://github.com/miraserver/myclaude/issues)
