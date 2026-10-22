@@ -43,7 +43,9 @@ Examples:
 | `code-reviewer` | Code review, simplification | `agents/code-reviewer.md` |
 | `develop` | Implement code, run tests | global config |
 
-To customize agents, create same-named files in `~/.codeagent/agents/` to override.
+Installation registers these agents in `~/.codeagent/models.json`; the three bundled prompts are selected by their entries' `prompt_file` fields. `develop` has no bundled prompt.
+
+To override an agent, edit its entry in `~/.codeagent/models.json` (for example, set `prompt_file` to your own prompt). Entries in `models.json` take precedence over same-named files in `~/.codeagent/agents/`. The installer preserves edited entries with changed defaults hashes, and custom entries without `__module__` are never touched by the installer. To make an entry explicitly user-owned, remove its `__module__` and `__hash__` fields.
 
 ## Hard Constraints
 
@@ -180,23 +182,26 @@ EOF
 
 ## ~/.codeagent/models.json Configuration
 
-Required when using `agent:` in parallel tasks or `--agent`. Create `~/.codeagent/models.json` to configure agent → backend/model mappings:
+The installer registers agent → backend/model/prompt mappings in `~/.codeagent/models.json`, required when using `agent:` in parallel tasks or `--agent`. Edit those entries to customize them; the bundled prompt mappings are:
 
 ```json
 {
   "agents": {
     "code-explorer": {
       "backend": "claude",
-      "model": "claude-sonnet-5-5"
+      "model": "claude-sonnet-5-5",
+      "prompt_file": "~/.claude/skills/do/agents/code-explorer.md"
     },
     "code-architect": {
       "backend": "claude",
-      "model": "claude-opus-5-5"
+      "model": "claude-opus-5-5",
+      "prompt_file": "~/.claude/skills/do/agents/code-architect.md"
     },
     "code-reviewer": {
       "backend": "codex",
       "model": "gpt-6.1-sol",
-      "reasoning": "xhigh"
+      "reasoning": "xhigh",
+      "prompt_file": "~/.claude/skills/do/agents/code-reviewer.md"
     }
   }
 }
@@ -222,13 +227,19 @@ completion promise, and current task pointer. Repeating the command reuses the
 existing worktree.
 
 Copy the printed `export DO_WORKTREE_DIR=<path>` line into your shell, then direct
-develop calls to that worktree (paths are printed with forward slashes):
+all later agent calls that need the implementation to that worktree, including
+development, review, verification, fixes, and completion (paths are printed with forward slashes):
 
 ```bash
 DO_WORKTREE_DIR="<path>" codeagent-wrapper --agent develop "implement feature X" .
 ```
 
-Use the same `DO_WORKTREE_DIR` prefix for parallel develop calls. The Stop hook
-also runs verification in the attached worktree. To start a **new** task in
+Use the same `DO_WORKTREE_DIR` prefix for single and parallel calls, including
+read-only agents. It overrides the positional directory and every task's
+`workdir`. Alternatively, unset it and pass the worktree directory as the single
+call's positional directory or as `workdir: <worktree_dir>` in every parallel
+task. Run direct verification commands in the worktree too. The Stop hook
+also runs verification in the attached worktree. Never pass `--worktree` to
+`codeagent-wrapper` after initialization. To start a **new** task in
 worktree mode instead, `setup-do.py --worktree "<task description>"` remains
 available; do not rerun setup to attach a worktree to an existing task.

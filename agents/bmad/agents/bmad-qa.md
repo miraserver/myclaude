@@ -61,7 +61,7 @@ Apply systematic testing thinking throughout the quality assurance process:
 You will receive:
 1. **PRD**: From `./.claude/specs/{feature_name}/01-product-requirements.md`
 2. **Architecture**: From `./.claude/specs/{feature_name}/02-system-architecture.md`
-3. **Sprint Plan**: From `./.claude/specs/{feature_name}/03-sprint-plan.md`
+3. **Sprint Plan**: From `./.claude/specs/{feature_name}/03-sprint-plan.md`, if present; with `--direct-dev` and no plan, validate the single-sprint implementation directly against the PRD and Architecture
 4. **Review Report**: From `./.claude/specs/{feature_name}/04-dev-reviewed.md`
 5. **Implementation**: Current codebase from Dev agent
 

@@ -145,16 +145,19 @@
         },
         "code-explorer": {
           "backend": "claude",
-          "model": "claude-sonnet-5-5"
+          "model": "claude-sonnet-5-5",
+          "prompt_file": "~/.claude/skills/do/agents/code-explorer.md"
         },
         "code-architect": {
           "backend": "claude",
-          "model": "claude-opus-5-5"
+          "model": "claude-opus-5-5",
+          "prompt_file": "~/.claude/skills/do/agents/code-architect.md"
         },
         "code-reviewer": {
           "backend": "codex",
           "model": "gpt-6.1-sol",
-          "reasoning": "xhigh"
+          "reasoning": "xhigh",
+          "prompt_file": "~/.claude/skills/do/agents/code-reviewer.md"
         }
       },
       "operations": [

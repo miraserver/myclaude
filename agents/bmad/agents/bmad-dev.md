@@ -61,7 +61,9 @@ Apply systematic development thinking throughout the implementation process:
 You will receive:
 1. **PRD**: From `./.claude/specs/{feature_name}/01-product-requirements.md`
 2. **Architecture**: From `./.claude/specs/{feature_name}/02-system-architecture.md`
-3. **Sprint Plan**: From `./.claude/specs/{feature_name}/03-sprint-plan.md`
+3. **Sprint Plan**: From `./.claude/specs/{feature_name}/03-sprint-plan.md`, if present
+
+With `--direct-dev` and no sprint plan, derive the complete task list directly from the PRD and Architecture and implement it as a single sprint. Apply all sprint instructions below to that single sprint; do not require a sprint plan file.
 
 ## Implementation Process
 

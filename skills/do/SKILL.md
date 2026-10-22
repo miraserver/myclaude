@@ -8,6 +8,8 @@ allowed-tools: ["Bash(python3:*/.claude/skills/do/scripts/setup-do.py*)", "Bash(
 
 An orchestrator for systematic feature development. Invoke agents via `codeagent-wrapper`, never write code directly.
 
+For every script call, use `python3` (on Windows, use `python` or `py -3` if `python3` is unavailable). Examples below use `python3`.
+
 ## Loop Initialization (REQUIRED)
 
 When triggered via `/do <task>`, initialize the task directory immediately without asking about worktree:
@@ -56,16 +58,16 @@ The worktree is created **only when needed** (right before Phase 4: Implement). 
    python3 "$HOME/.claude/skills/do/scripts/task.py" worktree
    ```
 
-2. Use the `DO_WORKTREE_DIR` environment variable to direct `codeagent-wrapper` develop agent into the worktree. **Do NOT pass `--worktree` to subsequent calls** — that creates a new worktree each time.
+2. Use the `DO_WORKTREE_DIR` environment variable to direct every later `codeagent-wrapper` call that needs the implementation into the worktree, including development, review, verification, and completion. **Never pass `--worktree` after initialization** — that creates a new worktree each time.
 
 ```bash
-# Save the worktree path from task.py output, then prefix all develop calls:
-DO_WORKTREE_DIR=<worktree_dir> codeagent-wrapper --agent develop - . <<'EOF'
+# Save the worktree path from task.py output, then prefix all implementation-dependent calls:
+DO_WORKTREE_DIR="<worktree_dir>" codeagent-wrapper --agent develop - . <<'EOF'
 ...
 EOF
 ```
 
-Read-only agents (code-explorer, code-architect, code-reviewer) do NOT need `DO_WORKTREE_DIR`.
+The wrapper applies `DO_WORKTREE_DIR` to every agent, including read-only agents, in both single and parallel calls; it overrides the positional directory and each task's `workdir`. Alternatively, pass the worktree directory as the single call's positional directory or set `workdir: <worktree_dir>` in every parallel task, with `DO_WORKTREE_DIR` unset. Phases 1-3 can use the original checkout before the worktree exists. After initialization, all agents inspecting the implementation must use the worktree. Run any direct verification commands there too; the Stop hook uses the attached worktree automatically.
 
 ## Hard Constraints
 
@@ -74,16 +76,16 @@ Read-only agents (code-explorer, code-architect, code-reviewer) do NOT need `DO_
 3. **Update phase after each phase.** Use `task.py update-phase <N>`.
 4. **Expect long-running `codeagent-wrapper` calls.** High-reasoning modes can take a long time.
 5. **Timeouts are not an escape hatch.** If a call times out, retry with narrower scope.
-6. **Defer worktree decision until Phase 4.** Only ask about worktree mode right before implementation. If enabled, prefix develop agent calls with `DO_WORKTREE_DIR=<path>`. Never pass `--worktree` after initialization.
+6. **Defer worktree decision until Phase 4.** Only ask about worktree mode right before implementation. If enabled, prefix every later implementation-dependent agent call (including review, verification, fixes, and completion) with `DO_WORKTREE_DIR="<path>"`. Never pass `--worktree` after initialization.
 
 ## Agents
 
-| Agent | Purpose | Needs --worktree |
-|-------|---------|------------------|
-| `code-explorer` | Trace code, map architecture, find patterns | No (read-only) |
-| `code-architect` | Design approaches, file plans, build sequences | No (read-only) |
-| `code-reviewer` | Review for bugs, simplicity, conventions | No (read-only) |
-| `develop` | Implement code, run tests | **Yes** — use `DO_WORKTREE_DIR` env prefix |
+| Agent | Purpose | Directory after worktree initialization |
+|-------|---------|-----------------------------------------|
+| `code-explorer` | Trace code, map architecture, find patterns | Worktree when inspecting implementation |
+| `code-architect` | Design approaches, file plans, build sequences | Worktree when inspecting implementation |
+| `code-reviewer` | Review for bugs, simplicity, conventions | Worktree (including completion summary) |
+| `develop` | Implement code, run tests | Worktree |
 
 ## Issue Severity Definitions
 
@@ -204,7 +206,7 @@ For full-stack projects, split into backend/frontend tasks with per-task `skills
 
 ```bash
 # With worktree:
-DO_WORKTREE_DIR=<worktree_dir> codeagent-wrapper --agent develop --skills golang-base-practices - . <<'EOF'
+DO_WORKTREE_DIR="<worktree_dir>" codeagent-wrapper --agent develop --skills golang-base-practices - . <<'EOF'
 Implement with minimal change set following the Phase 3 blueprint.
 - Follow Phase 1 patterns
 - Add/adjust tests per Phase 3 plan
@@ -224,7 +226,7 @@ EOF
 
 ```bash
 # With worktree:
-DO_WORKTREE_DIR=<worktree_dir> codeagent-wrapper --parallel <<'EOF'
+DO_WORKTREE_DIR="<worktree_dir>" codeagent-wrapper --parallel <<'EOF'
 ---TASK---
 id: p4_backend
 agent: develop
@@ -254,12 +256,11 @@ Note: Choose which skills to inject based on Phase 3 design output. Only inject 
 
 **Step 3: Review**
 
-**Step 3: Review**
-
-Run parallel reviews:
+Run parallel reviews in the implementation checkout:
 
 ```bash
-codeagent-wrapper --parallel <<'EOF'
+# With worktree (without worktree: remove DO_WORKTREE_DIR prefix):
+DO_WORKTREE_DIR="<worktree_dir>" codeagent-wrapper --parallel <<'EOF'
 ---TASK---
 id: p4_correctness
 agent: code-reviewer
@@ -280,7 +281,7 @@ EOF
 
 **Step 4: Handle review results**
 
-- **MINOR issues only** → Auto-fix via `develop`, no user interaction
+- **MINOR issues only** → Auto-fix via `develop` in the same implementation checkout, no user interaction
 - **BLOCKING issues** → Use AskUserQuestion: "Fix now / Proceed as-is"
 
 ### Phase 5: Complete (No Interaction)
@@ -288,7 +289,8 @@ EOF
 **Goal:** Document what was built.
 
 ```bash
-codeagent-wrapper --agent code-reviewer - . <<'EOF'
+# With worktree (without worktree: remove DO_WORKTREE_DIR prefix):
+DO_WORKTREE_DIR="<worktree_dir>" codeagent-wrapper --agent code-reviewer - . <<'EOF'
 Write completion summary:
 - What was built
 - Key decisions/tradeoffs

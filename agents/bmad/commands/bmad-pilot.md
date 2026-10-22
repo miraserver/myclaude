@@ -274,6 +274,8 @@ After achieving 90+ architecture quality score:
 
 ### Phase 3: Sprint Planning (Interactive — Unless --direct-dev)
 
+With `--direct-dev`, skip Phase 3 and continue to Phase 4 after architecture approval. When `03-sprint-plan.md` is absent, implement all PRD requirements directly from the PRD and Architecture as a single sprint; review and QA use those same documents and the implementation without requiring a sprint plan. Pass this branch explicitly to Dev, Review, and QA.
+
 #### 3a. Initial Sprint Plan Draft
 Execute using Task tool with bmad-sm agent:
 ```
@@ -343,8 +345,8 @@ Task: Implement ALL features across ALL sprints according to specifications.
 Instructions:
 1. Read PRD from ./.claude/specs/{feature_name}/01-product-requirements.md
 2. Read Architecture from ./.claude/specs/{feature_name}/02-system-architecture.md
-3. Read Sprint Plan from ./.claude/specs/{feature_name}/03-sprint-plan.md
-4. Identify and implement ALL sprints sequentially (Sprint 1, Sprint 2, etc.)
+3. Read Sprint Plan from ./.claude/specs/{feature_name}/03-sprint-plan.md if present; with --direct-dev and no plan, derive all tasks directly from the PRD and Architecture as a single sprint
+4. Identify and implement ALL sprints sequentially (Sprint 1, Sprint 2, etc.), or the single sprint for direct development
 5. Complete ALL tasks across ALL sprints before finishing
 6. Create production-ready code with tests for entire feature set
 7. Report implementation status for each sprint and overall completion
@@ -364,7 +366,7 @@ Task: Conduct independent code review
 Instructions:
 1. Read PRD from ./.claude/specs/{feature_name}/01-product-requirements.md
 2. Read Architecture from ./.claude/specs/{feature_name}/02-system-architecture.md
-3. Read Sprint Plan from ./.claude/specs/{feature_name}/03-sprint-plan.md
+3. Read Sprint Plan from ./.claude/specs/{feature_name}/03-sprint-plan.md if present; with --direct-dev and no plan, review the single sprint against the PRD and Architecture directly
 4. Analyze implementation against requirements and architecture
 5. Generate structured review report
 6. Save report to ./.claude/specs/{feature_name}/04-dev-reviewed.md
@@ -384,7 +386,7 @@ Task: Create and execute comprehensive test suite.
 Instructions:
 1. Read PRD from ./.claude/specs/{feature_name}/01-product-requirements.md
 2. Read Architecture from ./.claude/specs/{feature_name}/02-system-architecture.md
-3. Read Sprint Plan from ./.claude/specs/{feature_name}/03-sprint-plan.md
+3. Read Sprint Plan from ./.claude/specs/{feature_name}/03-sprint-plan.md if present; with --direct-dev and no plan, validate the single sprint against the PRD and Architecture directly
 4. Review implemented code from Phase 4
 5. Create comprehensive test suite validating all acceptance criteria
 6. Execute tests and report results
@@ -402,10 +404,10 @@ Instructions:
 6. If approved → Start Architect interaction (Phase 2)
 7. Iterate until architecture quality ≥ 90
 8. 🛑 STOP: Request user approval for architecture
-9. If approved → Start Sprint Planning (SM) unless --direct-dev
+9. If approved → Start Sprint Planning (SM); with --direct-dev, skip to step 12 using PRD/Architecture as a single sprint when no plan exists
 10. Iterate on sprint plan with user clarification
 11. 🛑 STOP: Request user approval for sprint plan
-12. If approved → Execute remaining phases:
+12. If sprint plan approved or --direct-dev → Execute remaining phases:
     - Development (Dev)
     - Code Review (Review)
     - Testing (QA) unless --skip-tests
@@ -454,7 +456,7 @@ All outputs saved to `./.claude/specs/{feature_name}/`:
 - **Scan Summary Cached**: 00-repo-scan.md present for the feature
 - **Clear Requirements**: PRD with 90+ quality score and user approval
 - **Solid Architecture**: Design with 90+ quality score and user approval
-- **Complete Planning**: Detailed sprint plan with all stories estimated
+- **Complete Planning**: Detailed sprint plan with all stories estimated, or single-sprint implementation from PRD/Architecture with --direct-dev
 - **Working Implementation**: Code fully implements PRD requirements per architecture
 - **Quality Assurance**: All acceptance criteria validated (unless skipped)
 

@@ -12,7 +12,7 @@ You are an independent code review agent responsible for conducting reviews betw
 1. **Load Context**
    - Read PRD from `./.claude/specs/{feature_name}/01-product-requirements.md`
    - Read Architecture from `./.claude/specs/{feature_name}/02-system-architecture.md`
-   - Read Sprint Plan from `./.claude/specs/{feature_name}/03-sprint-plan.md`
+   - Read Sprint Plan from `./.claude/specs/{feature_name}/03-sprint-plan.md` if present; with `--direct-dev` and no plan, review the single-sprint implementation directly against the PRD and Architecture
    - Analyze the code changes and implementation
 
 2. **Execute Review**
