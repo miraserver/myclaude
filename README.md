@@ -16,6 +16,23 @@
 npx github:miraserver/myclaude
 ```
 
+## Prerequisites
+
+- Node.js 18 or newer
+- Python 3 (on Windows, the `py` launcher or `python`)
+- Git
+- Windows users: Git Bash for `.sh`-based skills such as `sparv`
+- Backend CLIs installed and logged in as required by the module:
+
+| Module | Backend CLIs |
+|--------|--------------|
+| `do` | Codex + Claude |
+| `omo` | Codex + Claude + Gemini |
+| `course` / `dev` | Codex |
+| Other modules | None |
+
+These requirements follow the agents and backends in [`config.json`](config.json); update the table if that configuration changes.
+
 ## Modules Overview
 
 | Module | Description | Documentation |
@@ -28,7 +45,7 @@ npx github:miraserver/myclaude
 | [sparv](skills/sparv/README.md) | SPARV workflow (Specify→Plan→Act→Review→Vault) | `/sparv` command |
 | [harness](skills/harness/SKILL.md) | Multi-session autonomous agents with progress checkpoints, failure recovery, task dependencies, and self-reflection | `/harness` command |
 | course | Course development (combines dev + product-requirements + test-cases) | Composite module |
-| claudekit | ClaudeKit: do skill + global hooks (pre-bash, inject-spec, log-prompt) | Composite module |
+| claudekit | Global hooks only (pre-bash, inject-spec, log-prompt); do is a separate module | Composite module |
 
 ### Available Skills
 
@@ -64,20 +81,12 @@ npx github:miraserver/myclaude --install-dir ~/.claude --force
 
 ### Module Configuration
 
-Edit `config.json` to enable/disable modules:
+Select modules to install in the interactive menu; editing a local `config.json` does not configure npx installations. Use `--module` to select modules for updates or removal:
 
-```json
-{
-  "modules": {
-    "bmad": { "enabled": false },
-    "requirements": { "enabled": false },
-    "essentials": { "enabled": false },
-    "omo": { "enabled": false },
-    "sparv": { "enabled": false },
-    "do": { "enabled": true },
-    "course": { "enabled": false }
-  }
-}
+```bash
+npx github:miraserver/myclaude
+npx github:miraserver/myclaude --update --module do,omo
+npx github:miraserver/myclaude uninstall --module omo
 ```
 
 ## Workflow Selection Guide
@@ -110,7 +119,7 @@ Edit `config.json` to enable/disable modules:
 
 ```
 ~/.claude/
-├── bin/codeagent-wrapper
+├── bin/codeagent-wrapper  (Unix only)
 ├── CLAUDE.md              (installed by default)
 ├── commands/              (from essentials module)
 ├── agents/                (from bmad/requirements modules)
@@ -119,6 +128,14 @@ Edit `config.json` to enable/disable modules:
 ├── settings.json          (auto-generated, hooks config)
 └── installed_modules.json (auto-generated, tracks modules)
 ```
+
+On Windows, the wrapper is installed to `%USERPROFILE%\bin\codeagent-wrapper.exe`, rather than `~/.claude/bin`.
+
+## Security model
+
+Nested Claude, Codex, and Gemini backends skip permission prompts or sandbox protections by default. To restore Claude permission prompts, set `CODEAGENT_SKIP_PERMISSIONS=false`; to disable Codex sandbox bypass, set `CODEX_BYPASS_SANDBOX=false`. Also set `yolo: false` for relevant agents in `~/.codeagent/models.json` and remove explicit `--skip-permissions` flags or task-level `skip-permissions: true`. The Gemini wrapper always adds `-y` and currently has no opt-out; for permission prompts or sandboxing, run the Gemini CLI directly without `-y` and enable its sandbox.
+
+The `do` Stop hook only verifies tasks created by `/do` on this machine. Installers verify downloaded files against the release asset `SHA256SUMS` using SHA-256.
 
 ## Documentation
 

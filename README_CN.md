@@ -14,6 +14,23 @@
 npx github:miraserver/myclaude
 ```
 
+## 前置条件
+
+- Node.js 18 或更高版本
+- Python 3（Windows 使用 `py` 启动器或 `python`）
+- Git
+- Windows 用户：运行 `sparv` 等基于 `.sh` 的技能需要 Git Bash
+- 按模块安装并登录所需的后端 CLI：
+
+| 模块 | 后端 CLI |
+|------|----------|
+| `do` | Codex + Claude |
+| `omo` | Codex + Claude + Gemini |
+| `course` / `dev` | Codex |
+| 其他模块 | 无 |
+
+以上要求依据 [`config.json`](config.json) 中的 agents 和 backends；配置变化时请同步更新此表。
+
 ## 模块概览
 
 | 模块 | 描述 | 文档 |
@@ -26,7 +43,7 @@ npx github:miraserver/myclaude
 | [sparv](skills/sparv/README.md) | SPARV 工作流 (Specify→Plan→Act→Review→Vault) | `/sparv` 命令 |
 | [harness](skills/harness/SKILL.md) | 跨会话自主智能体，支持进度检查点、失败恢复、任务依赖和完成后自我反思 | `/harness` 命令 |
 | course | 课程开发（组合 dev + product-requirements + test-cases） | 组合模块 |
-| claudekit | ClaudeKit：do 技能 + 全局钩子（pre-bash、inject-spec、log-prompt）| 组合模块 |
+| claudekit | 仅安装全局钩子（pre-bash、inject-spec、log-prompt）；do 是独立模块| 组合模块 |
 
 ### 可用技能
 
@@ -88,10 +105,10 @@ npx github:miraserver/myclaude
 | 智能体 | 角色 | 后端 |
 |-------|------|------|
 | `oracle` | 技术顾问 | Claude |
-| `librarian` | 外部研究 | Claude |
-| `explore` | 代码库搜索 | OpenCode |
+| `librarian` | 外部研究 | Codex |
+| `explore` | 代码库搜索 | Claude |
 | `develop` | 代码实现 | Codex |
-| `frontend-ui-ux-engineer` | UI/UX 专家 | Gemini |
+| `frontend-ui-ux-engineer` | UI/UX 专家 | Claude |
 | `document-writer` | 文档撰写 | Gemini |
 
 **常用配方：**
@@ -205,20 +222,12 @@ npx github:miraserver/myclaude --install-dir ~/.claude --force
 
 ### 模块配置
 
-编辑 `config.json` 启用/禁用模块：
+通过交互式菜单选择要安装的模块；修改本地 `config.json` 不会配置 npx 安装。使用 `--module` 指定要更新或卸载的模块：
 
-```json
-{
-  "modules": {
-    "bmad": { "enabled": false },
-    "requirements": { "enabled": false },
-    "essentials": { "enabled": false },
-    "omo": { "enabled": false },
-    "sparv": { "enabled": false },
-    "do": { "enabled": true },
-    "course": { "enabled": false }
-  }
-}
+```bash
+npx github:miraserver/myclaude
+npx github:miraserver/myclaude --update --module do,omo
+npx github:miraserver/myclaude uninstall --module omo
 ```
 
 ## 工作流选择指南
@@ -263,6 +272,16 @@ npx github:miraserver/myclaude --force
 | Codex 权限拒绝 | 在 ~/.codex/config.toml 设置 `approval_policy = "never"` |
 
 更多问题请访问 [GitHub Issues](https://github.com/miraserver/myclaude/issues)。
+
+## 安全模型
+
+嵌套的 Claude、Codex、Gemini 后端默认跳过权限提示或沙箱保护。要恢复 Claude 的权限提示，请设置 `CODEAGENT_SKIP_PERMISSIONS=false`；要关闭 Codex 的沙箱绕过，请设置 `CODEX_BYPASS_SANDBOX=false`。同时将 `~/.codeagent/models.json` 中相关智能体的 `yolo` 设为 `false`，并移除显式的 `--skip-permissions` 或任务配置中的 `skip-permissions: true`。Gemini 包装器始终添加 `-y`，目前没有关闭开关；需要权限提示或沙箱时，请直接运行 Gemini CLI，省略 `-y` 并启用沙箱。
+
+`do` 的 Stop 钩子仅验证本机通过 `/do` 创建的任务。安装器使用发布资产 `SHA256SUMS` 校验下载文件的 SHA-256。
+
+## 安装后的路径
+
+Unix 上包装器默认位于 `~/.claude/bin/codeagent-wrapper`；Windows 上位于 `%USERPROFILE%\bin\codeagent-wrapper.exe`，不在 `~/.claude/bin`。
 
 ## 许可证
 

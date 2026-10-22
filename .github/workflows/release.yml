@@ -6,9 +6,33 @@ on:
       - 'v*'
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
+  scripts:
+    name: Scripts (${{ matrix.os }})
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install test dependencies
+        run: python -m pip install pytest pyyaml
+      - name: Run script tests
+        shell: bash
+        run: |
+          unset CLAUDE_PROJECT_DIR
+          node --test tests/cli.test.js
+          python -m pytest tests -q
+          python -m pytest skills -q
+
   test:
     name: Test (${{ matrix.os }})
     strategy:
@@ -27,7 +51,7 @@ jobs:
       - name: Run tests
         run: |
           cd codeagent-wrapper
-          go test -v -cover -coverprofile=coverage.out ./...
+          go test -timeout 20m -v -cover -coverprofile=coverage.out ./...
         shell: bash
 
       - name: Check coverage
@@ -90,13 +114,29 @@ jobs:
 
   release:
     name: Create Release
-    needs: [test, build]
+    needs: [test, scripts, build]
+    permissions:
+      contents: write
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Verify release version
+        shell: bash
+        run: |
+          PACKAGE_TAG="v$(node -p "require('./package.json').version")"
+          if [ "$PACKAGE_TAG" != "$GITHUB_REF_NAME" ]; then
+            echo "Tag $GITHUB_REF_NAME does not match package version $PACKAGE_TAG" >&2
+            exit 1
+          fi
 
       - name: Generate Release Notes
         id: release_notes
@@ -133,10 +173,11 @@ jobs:
           mkdir -p release
           find artifacts -type f -name "codeagent-wrapper-*" -exec mv {} release/ \;
           cp install.sh install.bat release/
+          (cd release && sha256sum --text codeagent-wrapper-* install.sh install.bat > SHA256SUMS)
           ls -la release/
 
       - name: Create Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
           files: release/*
           body_path: release_notes.md

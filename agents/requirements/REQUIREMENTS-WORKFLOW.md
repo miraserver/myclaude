@@ -250,9 +250,9 @@ Use Requirements Workflow for sub-tasks within BMAD sprints:
 
 ## 📚 Related Documentation
 
-- **[BMAD Workflow](BMAD-WORKFLOW.md)** - Full agile methodology
-- **[Development Commands](DEVELOPMENT-COMMANDS.md)** - Direct coding commands
-- **[Quick Start Guide](QUICK-START.md)** - Get started quickly
+- **[BMAD Workflow](../bmad/BMAD-WORKFLOW.md)** - Full agile methodology
+- **[Development Commands](../development-essentials/DEVELOPMENT-COMMANDS.md)** - Direct coding commands
+- **[Quick Start Guide](../../README.md#quick-start)** - Get started quickly
 
 ---
 

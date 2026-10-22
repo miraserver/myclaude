@@ -6,7 +6,34 @@ on:
   pull_request:
     branches: [master, rc/*]
 
+permissions:
+  contents: read
+
 jobs:
+  scripts:
+    name: Scripts (${{ matrix.os }})
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install test dependencies
+        run: python -m pip install pytest pyyaml
+      - name: Run script tests
+        shell: bash
+        run: |
+          unset CLAUDE_PROJECT_DIR
+          node --test tests/cli.test.js
+          python -m pytest tests -q
+          python -m pytest skills -q
+
   test:
     strategy:
       matrix:
@@ -23,7 +50,7 @@ jobs:
       - name: Run tests
         run: |
           cd codeagent-wrapper
-          go test -v -cover -coverprofile=coverage.out ./...
+          go test -timeout 20m -v -cover -coverprofile=coverage.out ./...
         shell: bash
 
       - name: Check coverage
@@ -33,7 +60,7 @@ jobs:
         shell: bash
 
       - name: Upload coverage
-        uses: codecov/codecov-action@v4
+        uses: codecov/codecov-action@b9fd7d16f6d7d1b5d2bec1a2887e65ceed900238 # v4
         with:
           file: codeagent-wrapper/coverage.out
         continue-on-error: true

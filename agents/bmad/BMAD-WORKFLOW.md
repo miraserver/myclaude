@@ -239,10 +239,10 @@ BMAD workflow uses a specialized output style that:
 
 ## 📚 Related Documentation
 
-- **[Quick Start Guide](QUICK-START.md)** - Get started in 5 minutes
-- **[Plugin System](PLUGIN-SYSTEM.md)** - Installation and configuration
-- **[Development Commands](DEVELOPMENT-COMMANDS.md)** - Alternative workflows
-- **[Requirements Workflow](REQUIREMENTS-WORKFLOW.md)** - Lightweight alternative
+- **[Quick Start Guide](../../README.md#quick-start)** - Get started in 5 minutes
+- **[Plugin System](../../PLUGIN_README.md)** - Installation and configuration
+- **[Development Commands](../development-essentials/DEVELOPMENT-COMMANDS.md)** - Alternative workflows
+- **[Requirements Workflow](../requirements/REQUIREMENTS-WORKFLOW.md)** - Lightweight alternative
 
 ## 💡 Best Practices
 

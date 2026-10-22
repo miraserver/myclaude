@@ -311,10 +311,10 @@ All commands use specialized agents configured in:
 
 ## 📚 Related Documentation
 
-- **[BMAD Workflow](BMAD-WORKFLOW.md)** - Full agile methodology
-- **[Requirements Workflow](REQUIREMENTS-WORKFLOW.md)** - Lightweight workflow
-- **[Quick Start Guide](QUICK-START.md)** - Get started quickly
-- **[Plugin System](PLUGIN-SYSTEM.md)** - Installation and configuration
+- **[BMAD Workflow](../bmad/BMAD-WORKFLOW.md)** - Full agile methodology
+- **[Requirements Workflow](../requirements/REQUIREMENTS-WORKFLOW.md)** - Lightweight workflow
+- **[Quick Start Guide](../../README.md#quick-start)** - Get started quickly
+- **[Plugin System](../../PLUGIN_README.md)** - Installation and configuration
 
 ---
 

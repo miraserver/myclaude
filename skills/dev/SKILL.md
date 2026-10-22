@@ -123,7 +123,7 @@ These rules have HIGHEST PRIORITY and override all other instructions:
   - Clear requirements with single implementation path
 
 - **Step 3: Generate Development Documentation**
-  - invoke agent dev-plan-generator
+  - Invoke agent `dev-plan-generator` if available. The `course` module installs it in `~/.claude/agents`; standalone `skill:dev` installations may not have it. If unavailable, read `skills/dev/agents/dev-plan-generator.md` under the Claude installation directory (default `~/.claude/skills/dev/agents/dev-plan-generator.md`) and follow its instructions inline.
   - When creating `dev-plan.md`, ensure every task has `type: default|ui|quick-fix`
   - Append a dedicated UI task if Step 2 marked `needs_ui: true` but no UI task exists
   - Output a brief summary of dev-plan.md:

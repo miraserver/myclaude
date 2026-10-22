@@ -243,10 +243,10 @@ Development Essentials 模块包含以下专用代理：
 
 ## 🔗 相关文档
 
-- [主文档](../README.md) - 项目总览
-- [BMAD工作流](../agents/bmad/BMAD-WORKFLOW.md) - 完整敏捷流程
-- [Requirements工作流](../agents/requirements/REQUIREMENTS-WORKFLOW.md) - 轻量级开发流程
-- [插件系统](../PLUGIN_README.md) - 插件安装和管理
+- [主文档](../../README.md) - 项目总览
+- [BMAD工作流](../bmad/BMAD-WORKFLOW.md) - 完整敏捷流程
+- [Requirements工作流](../requirements/REQUIREMENTS-WORKFLOW.md) - 轻量级开发流程
+- [插件系统](../../PLUGIN_README.md) - 插件安装和管理
 
 ---
 
