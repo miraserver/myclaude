@@ -15,10 +15,14 @@ def main() -> None:
     parser.add_argument("command", choices=("activate", "deactivate"))
     parser.add_argument("root", type=Path)
     args = parser.parse_args()
-    if args.command == "activate":
-        activate_harness(args.root)
-    else:
-        deactivate_harness(args.root)
+    try:
+        if args.command == "activate":
+            activate_harness(args.root)
+        else:
+            deactivate_harness(args.root)
+    except Exception as exc:
+        print(f"harness activation failed: {exc}", file=sys.stderr)
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":

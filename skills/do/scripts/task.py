@@ -24,7 +24,9 @@ import string
 import subprocess
 import sys
 import tempfile
+import time
 from datetime import datetime
+from contextlib import contextmanager
 from pathlib import Path
 
 # Directory constants
@@ -46,10 +48,54 @@ def registry_path() -> Path:
     return Path.home() / ".claude" / "do-state" / "registry.json"
 
 
+@contextmanager
+def _registry_lock():
+    """Serialize registry updates across independently running processes."""
+    path = registry_path().with_name("registry.lock")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    deadline = time.monotonic() + 5.0
+    while True:
+        try:
+            descriptor = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        except (FileExistsError, PermissionError):
+            # Windows can deny creation while a previous lock is being deleted.
+            try:
+                if time.time() - path.stat().st_mtime > 30.0:
+                    path.unlink()
+                    continue
+            except FileNotFoundError:
+                pass
+            except PermissionError:
+                pass
+            if time.monotonic() >= deadline:
+                raise TimeoutError("Timed out waiting for registry lock: " + str(path))
+            time.sleep(0.02)
+        else:
+            break
+    try:
+        os.close(descriptor)
+        yield
+    finally:
+        path.unlink(missing_ok=True)
+
+
+def _registry_retry(operation, timeout):
+    """Retry Windows sharing violations, leaving other failures unchanged."""
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            return operation()
+        except PermissionError:
+            if time.monotonic() >= deadline:
+                raise
+            time.sleep(0.02)
+
+
 def load_registry() -> dict:
     """Fail closed for missing or malformed user-local authorization."""
     try:
-        registry = json.loads(registry_path().read_text(encoding="utf-8"))
+        registry = json.loads(_registry_retry(
+            lambda: registry_path().read_text(encoding="utf-8"), 1.0))
         if not isinstance(registry, dict):
             raise ValueError("expected an object")
         for tasks in registry.values():
@@ -77,27 +123,28 @@ def registered_task(project_root: str, task_md_path: str) -> dict | None:
 
 def register_task(project_root: str, task_md_path: str, command: str, created_at: str) -> None:
     """Atomically persist commands authorized through task creation/set-verify."""
-    registry = load_registry()
-    project = str(Path(project_root).resolve())
-    name = Path(task_md_path).resolve().parent.name
-    tasks = registry.setdefault(project, {})
-    previous = tasks.get(name, {})
-    tasks[name] = {
-        "verify_command": command,
-        "created_at": previous.get("created_at", created_at),
-    }
-    path = registry_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = None
-    try:
-        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=path.parent,
-                                         prefix="registry-", suffix=".tmp", delete=False) as output:
-            temporary = Path(output.name)
-            json.dump(registry, output, ensure_ascii=True)
-        os.replace(temporary, path)
-    finally:
-        if temporary is not None:
-            temporary.unlink(missing_ok=True)
+    with _registry_lock():
+        registry = load_registry()
+        project = str(Path(project_root).resolve())
+        name = Path(task_md_path).resolve().parent.name
+        tasks = registry.setdefault(project, {})
+        previous = tasks.get(name, {})
+        tasks[name] = {
+            "verify_command": command,
+            "created_at": previous.get("created_at", created_at),
+        }
+        path = registry_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = None
+        try:
+            with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=path.parent,
+                                             prefix="registry-", suffix=".tmp", delete=False) as output:
+                temporary = Path(output.name)
+                json.dump(registry, output, ensure_ascii=True)
+            _registry_retry(lambda: os.replace(temporary, path), 2.0)
+        finally:
+            if temporary is not None:
+                temporary.unlink(missing_ok=True)
 
 
 def get_project_root() -> str:

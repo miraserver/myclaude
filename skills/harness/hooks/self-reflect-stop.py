@@ -120,8 +120,11 @@ def main() -> int:
     except (ValueError, AttributeError, OSError):
         marker_session = None
     if marker_session != session_id:
-        marker.unlink(missing_ok=True)
-        hc.clear_reflection(root)
+        try:
+            marker.unlink(missing_ok=True)
+            hc.clear_reflection(root)
+        except Exception:
+            pass
         return 0
 
     # 读取最大迭代次数

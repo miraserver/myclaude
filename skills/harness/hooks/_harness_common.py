@@ -15,6 +15,7 @@ import shutil
 import sys
 import time
 import tempfile
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Optional
 
@@ -109,10 +110,54 @@ def registry_path() -> Path:
     return Path.home() / ".claude" / "harness-state" / "registry.json"
 
 
+@contextmanager
+def _registry_lock():
+    """Serialize registry updates across independently running processes."""
+    path = registry_path().with_name("registry.lock")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    deadline = time.monotonic() + 5.0
+    while True:
+        try:
+            descriptor = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        except (FileExistsError, PermissionError):
+            # Windows can deny creation while a previous lock is being deleted.
+            try:
+                if time.time() - path.stat().st_mtime > 30.0:
+                    path.unlink()
+                    continue
+            except FileNotFoundError:
+                pass
+            except PermissionError:
+                pass
+            if time.monotonic() >= deadline:
+                raise TimeoutError("Timed out waiting for registry lock: " + str(path))
+            time.sleep(0.02)
+        else:
+            break
+    try:
+        os.close(descriptor)
+        yield
+    finally:
+        path.unlink(missing_ok=True)
+
+
+def _registry_retry(operation, timeout):
+    """Retry Windows sharing violations, leaving other failures unchanged."""
+    deadline = time.monotonic() + timeout
+    while True:
+        try:
+            return operation()
+        except PermissionError:
+            if time.monotonic() >= deadline:
+                raise
+            time.sleep(0.02)
+
+
 def load_registry() -> dict[str, Any]:
     """Missing or malformed local authorization silently fails closed."""
     try:
-        data = json.loads(registry_path().read_text(encoding="utf-8"))
+        data = json.loads(_registry_retry(
+            lambda: registry_path().read_text(encoding="utf-8"), 1.0))
         if (not isinstance(data, dict)
                 or not isinstance(data.get("roots"), list)
                 or not all(isinstance(root, str) for root in data["roots"])
@@ -138,7 +183,7 @@ def _write_registry(data: dict[str, Any]) -> None:
             if os.name == "posix":
                 os.fchmod(output.fileno(), 0o600)
             json.dump(data, output, ensure_ascii=True)
-        os.replace(temporary, path)
+        _registry_retry(lambda: os.replace(temporary, path), 2.0)
     finally:
         if temporary is not None:
             temporary.unlink(missing_ok=True)
@@ -150,10 +195,11 @@ def registered_root(root: Path) -> bool:
 
 def register_root(root: Path) -> None:
     root = root.resolve()
-    data = load_registry()
-    data["roots"] = sorted(set(data["roots"]) | {str(root)})
-    data["reflections"].pop(str(root), None)
-    _write_registry(data)
+    with _registry_lock():
+        data = load_registry()
+        data["roots"] = sorted(set(data["roots"]) | {str(root)})
+        data["reflections"].pop(str(root), None)
+        _write_registry(data)
 
 
 def activate_harness(root: Path) -> None:
@@ -166,19 +212,21 @@ def activate_harness(root: Path) -> None:
 def deactivate_harness(root: Path, *, reflection_session: str = "") -> None:
     root = root.resolve()
     (root / ".harness-active").unlink(missing_ok=True)
-    data = load_registry()
-    data["roots"] = [entry for entry in data["roots"] if entry != str(root)]
-    data["reflections"].pop(str(root), None)
-    if reflection_session:
-        # Completion may reflect only in the session that finished this run.
-        data["reflections"][str(root)] = reflection_session
-    _write_registry(data)
+    with _registry_lock():
+        data = load_registry()
+        data["roots"] = [entry for entry in data["roots"] if entry != str(root)]
+        data["reflections"].pop(str(root), None)
+        if reflection_session:
+            # Completion may reflect only in the session that finished this run.
+            data["reflections"][str(root)] = reflection_session
+        _write_registry(data)
 
 
 def clear_reflection(root: Path) -> None:
-    data = load_registry()
-    if data["reflections"].pop(str(root.resolve()), None) is not None:
-        _write_registry(data)
+    with _registry_lock():
+        data = load_registry()
+        if data["reflections"].pop(str(root.resolve()), None) is not None:
+            _write_registry(data)
 
 
 def find_harness_root(payload: dict[str, Any], *, reflection: bool = False) -> Optional[Path]:
