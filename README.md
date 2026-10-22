@@ -26,6 +26,7 @@ npx github:miraserver/myclaude
 | [requirements](agents/requirements/README.md) | Lightweight requirements-to-code pipeline | `/requirements-pilot` command |
 | [essentials](agents/development-essentials/README.md) | 11 core dev commands: ask, bugfix, code, debug, docs, enhance-prompt, optimize, refactor, review, test, think | `/code`, `/debug`, etc. |
 | [sparv](skills/sparv/README.md) | SPARV workflow (Specify→Plan→Act→Review→Vault) | `/sparv` command |
+| [harness](skills/harness/SKILL.md) | Multi-session autonomous agents with progress checkpoints, failure recovery, task dependencies, and self-reflection | `/harness` command |
 | course | Course development (combines dev + product-requirements + test-cases) | Composite module |
 | claudekit | ClaudeKit: do skill + global hooks (pre-bash, inject-spec, log-prompt) | Composite module |
 
@@ -37,9 +38,7 @@ Individual skills can be installed separately via `npx github:miraserver/myclaud
 |-------|-------------|
 | browser | Browser automation for web testing and data extraction |
 | codeagent | codeagent-wrapper invocation for multi-backend AI code tasks |
-| codex | Direct Codex backend execution |
 | dev | Lightweight end-to-end development workflow |
-| gemini | Direct Gemini backend execution |
 | product-requirements | Interactive PRD generation with quality scoring |
 | prototype-prompt-generator | Structured UI/UX prototype prompt generation |
 | skill-install | Install skills from GitHub with security scanning |
@@ -155,7 +154,7 @@ which gemini && gemini --version
 |-------|----------|
 | "Unknown event format" | Logging display issue, can be ignored |
 | Gemini can't read .gitignore files | Remove from .gitignore or use different backend |
-| Codex permission denied | Set `approval_policy = "never"` in ~/.codex/config.yaml |
+| Codex permission denied | Set `approval_policy = "never"` in ~/.codex/config.toml |
 
 See [GitHub Issues](https://github.com/miraserver/myclaude/issues) for more.
 

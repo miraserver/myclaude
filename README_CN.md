@@ -24,6 +24,7 @@ npx github:miraserver/myclaude
 | [requirements](agents/requirements/README.md) | 轻量级需求到代码流水线 | `/requirements-pilot` 命令 |
 | [essentials](agents/development-essentials/README.md) | 11 个核心开发命令：ask、bugfix、code、debug、docs、enhance-prompt、optimize、refactor、review、test、think | `/code`, `/debug` 等 |
 | [sparv](skills/sparv/README.md) | SPARV 工作流 (Specify→Plan→Act→Review→Vault) | `/sparv` 命令 |
+| [harness](skills/harness/SKILL.md) | 跨会话自主智能体，支持进度检查点、失败恢复、任务依赖和完成后自我反思 | `/harness` 命令 |
 | course | 课程开发（组合 dev + product-requirements + test-cases） | 组合模块 |
 | claudekit | ClaudeKit：do 技能 + 全局钩子（pre-bash、inject-spec、log-prompt）| 组合模块 |
 
@@ -35,9 +36,7 @@ npx github:miraserver/myclaude
 |------|------|
 | browser | 浏览器自动化测试和数据提取 |
 | codeagent | codeagent-wrapper 多后端 AI 代码任务调用 |
-| codex | Codex 后端直接执行 |
 | dev | 轻量级端到端开发工作流 |
-| gemini | Gemini 后端直接执行 |
 | product-requirements | 交互式 PRD 生成（含质量评分）|
 | prototype-prompt-generator | 结构化 UI/UX 原型提示词生成 |
 | skill-install | 从 GitHub 安装技能（含安全扫描）|
@@ -261,7 +260,7 @@ npx github:miraserver/myclaude --force
 |------|----------|
 | "Unknown event format" | 日志显示问题，可忽略 |
 | Gemini 无法读取 .gitignore 文件 | 从 .gitignore 移除或使用其他后端 |
-| Codex 权限拒绝 | 在 ~/.codex/config.yaml 设置 `approval_policy = "never"` |
+| Codex 权限拒绝 | 在 ~/.codex/config.toml 设置 `approval_policy = "never"` |
 
 更多问题请访问 [GitHub Issues](https://github.com/miraserver/myclaude/issues)。
 

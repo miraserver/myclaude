@@ -1,7 +1,7 @@
 # Claude Code Multi-Agent Workflow System Makefile
 # Quick deployment for BMAD and Requirements workflows
 
-.PHONY: help install deploy-bmad deploy-requirements deploy-essentials deploy-advanced deploy-all deploy-commands deploy-agents clean test changelog
+.PHONY: help install deploy-bmad deploy-requirements deploy-essentials deploy-all deploy-commands deploy-agents clean test changelog
 
 # Default target
 help:
@@ -16,7 +16,6 @@ help:
 	@echo "  deploy-bmad          - Deploy BMAD workflow (bmad-pilot)"
 	@echo "  deploy-requirements  - Deploy Requirements workflow (requirements-pilot)"
 	@echo "  deploy-essentials    - Deploy Development Essentials workflow"
-	@echo "  deploy-advanced      - Deploy Advanced AI Agents"
 	@echo "  deploy-commands      - Deploy all slash commands"
 	@echo "  deploy-agents        - Deploy all agent configurations"
 	@echo "  deploy-all           - Deploy everything (commands + agents)"
@@ -34,8 +33,6 @@ SPECS_DIR = .claude/specs
 BMAD_DIR = agents/bmad
 REQUIREMENTS_DIR = agents/requirements
 ESSENTIALS_DIR = agents/development-essentials
-ADVANCED_DIR = advanced-ai-agents
-OUTPUT_STYLES_DIR = output-styles
 
 # Install all configurations
 install: deploy-all
@@ -48,10 +45,8 @@ deploy-bmad:
 	@echo "🚀 Deploying BMAD workflow..."
 	@mkdir -p $(CLAUDE_CONFIG_DIR)/commands
 	@mkdir -p $(CLAUDE_CONFIG_DIR)/agents
-	@mkdir -p $(CLAUDE_CONFIG_DIR)/output-styles
 	@cp $(BMAD_DIR)/commands/bmad-pilot.md $(CLAUDE_CONFIG_DIR)/commands/
 	@cp $(BMAD_DIR)/agents/*.md $(CLAUDE_CONFIG_DIR)/agents/
-	@cp $(OUTPUT_STYLES_DIR)/bmad.md $(CLAUDE_CONFIG_DIR)/output-styles/ 2>/dev/null || true
 	@echo "✅ BMAD workflow deployed successfully!"
 	@echo "   Usage: /bmad-pilot \"your feature description\""
 
@@ -75,13 +70,6 @@ deploy-essentials:
 	@echo "✅ Development Essentials deployed successfully!"
 	@echo "   Available commands: /ask, /code, /debug, /test, /review, /optimize, /bugfix, /refactor, /docs, /think"
 
-# Deploy Advanced AI Agents
-deploy-advanced:
-	@echo "🚀 Deploying Advanced AI Agents..."
-	@mkdir -p $(CLAUDE_CONFIG_DIR)/agents
-	@cp $(ADVANCED_DIR)/agents/*.md $(CLAUDE_CONFIG_DIR)/agents/
-	@echo "✅ Advanced AI Agents deployed successfully!"
-
 # Deploy all commands
 deploy-commands:
 	@echo "📦 Deploying all slash commands..."
@@ -103,13 +91,10 @@ deploy-agents:
 	@cp $(BMAD_DIR)/agents/*.md $(CLAUDE_CONFIG_DIR)/agents/
 	@cp $(REQUIREMENTS_DIR)/agents/*.md $(CLAUDE_CONFIG_DIR)/agents/
 	@cp $(ESSENTIALS_DIR)/agents/*.md $(CLAUDE_CONFIG_DIR)/agents/
-	@cp $(ADVANCED_DIR)/agents/*.md $(CLAUDE_CONFIG_DIR)/agents/
 	@echo "✅ All agents deployed!"
 
 # Deploy everything
 deploy-all: deploy-commands deploy-agents
-	@mkdir -p $(CLAUDE_CONFIG_DIR)/output-styles
-	@cp $(OUTPUT_STYLES_DIR)/*.md $(CLAUDE_CONFIG_DIR)/output-styles/ 2>/dev/null || true
 	@echo "✨ Full deployment complete!"
 	@echo ""
 	@echo "Quick Start:"
@@ -139,7 +124,6 @@ clean:
 bmad: deploy-bmad
 requirements: deploy-requirements
 essentials: deploy-essentials
-advanced: deploy-advanced
 all: deploy-all
 
 # Version info
