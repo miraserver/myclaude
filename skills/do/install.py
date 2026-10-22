@@ -14,7 +14,16 @@ SKILL_NAME = "do"
 HOOK_PATH = "~/.claude/skills/do/hooks/stop-hook.py"
 
 MODELS_JSON_TEMPLATE = {
+    "default_backend": "codex",
+    "default_model": "gpt-6.1-sol",
+    "backends": {name: {"api_key": ""} for name in ("codex", "claude", "gemini", "opencode")},
     "agents": {
+        "develop": {
+            "backend": "codex",
+            "model": "gpt-6.1-sol",
+            "reasoning": "xhigh",
+            "yolo": True
+        },
         "code-explorer": {
             "backend": "claude",
             "model": "claude-sonnet-5-5"
@@ -113,12 +122,32 @@ def install_models_json():
     """Install ~/.codeagent/models.json if not exists"""
     path = Path.home() / ".codeagent" / "models.json"
     if path.exists():
-        print(f"⚠ {path} already exists, skipping")
+        try:
+            with path.open("r", encoding="utf-8-sig") as f:
+                models = json.load(f)
+            if not isinstance(models, dict):
+                raise ValueError("expected a JSON object")
+        except (ValueError, OSError) as exc:
+            print(f"Warning: cannot merge {path}: {exc}")
+            return
+        agents = models.get("agents")
+        if not isinstance(agents, dict):
+            agents = models["agents"] = {}
+        missing = {name: {**cfg, "__module__": "do"} for name, cfg in MODELS_JSON_TEMPLATE["agents"].items()
+                   if name not in agents}
+        if not missing:
+            print(f"✓ {path} already contains do agents")
+            return
+        agents.update(missing)
+        with path.open("w", encoding="utf-8") as f:
+            json.dump(models, f, indent=2)
+        print(f"✓ Added missing do agents to {path}")
         return
 
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "w", encoding="utf-8") as f:
-        json.dump(MODELS_JSON_TEMPLATE, f, indent=2)
+        json.dump({**MODELS_JSON_TEMPLATE, "agents": {name: {**cfg, "__module__": "do"}
+                  for name, cfg in MODELS_JSON_TEMPLATE["agents"].items()}}, f, indent=2)
     print(f"✓ Created {path}")
 
 def install():
