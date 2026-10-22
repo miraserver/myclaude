@@ -50,6 +50,7 @@ def test_emit_context_shape(tmp_path):
 
 @pytest.mark.parametrize("marker", [{"session_id": "old", "count": 2}, 3, None])
 def test_reflect_other_session_removed(tmp_path, marker):
+    activate(tmp_path)
     write_tasks(tmp_path, [{"id": "done", "status": "completed"}])
     path = tmp_path / ".harness-reflect"
     path.write_text(json.dumps(marker))

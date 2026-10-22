@@ -105,7 +105,83 @@ def maybe_log_hook_event(root: Path, payload: dict[str, Any], hook_script: str) 
 # State root discovery
 # ---------------------------------------------------------------------------
 
-def find_harness_root(payload: dict[str, Any]) -> Optional[Path]:
+def registry_path() -> Path:
+    return Path.home() / ".claude" / "harness-state" / "registry.json"
+
+
+def load_registry() -> dict[str, Any]:
+    """Missing or malformed local authorization silently fails closed."""
+    try:
+        data = json.loads(registry_path().read_text(encoding="utf-8"))
+        if (not isinstance(data, dict)
+                or not isinstance(data.get("roots"), list)
+                or not all(isinstance(root, str) for root in data["roots"])
+                or not isinstance(data.get("reflections", {}), dict)
+                or not all(isinstance(root, str) and isinstance(session, str)
+                           for root, session in data.get("reflections", {}).items())):
+            return {"roots": [], "reflections": {}}
+        data.setdefault("reflections", {})
+        return data
+    except (OSError, ValueError):
+        return {"roots": [], "reflections": {}}
+
+
+def _write_registry(data: dict[str, Any]) -> None:
+    """Atomic replacement with a private temporary file (0600 on POSIX)."""
+    path = registry_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=path.parent,
+                                         prefix="registry-", suffix=".tmp", delete=False) as output:
+            temporary = Path(output.name)
+            if os.name == "posix":
+                os.fchmod(output.fileno(), 0o600)
+            json.dump(data, output, ensure_ascii=True)
+        os.replace(temporary, path)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+
+
+def registered_root(root: Path) -> bool:
+    return str(root.resolve()) in load_registry()["roots"]
+
+
+def register_root(root: Path) -> None:
+    root = root.resolve()
+    data = load_registry()
+    data["roots"] = sorted(set(data["roots"]) | {str(root)})
+    data["reflections"].pop(str(root), None)
+    _write_registry(data)
+
+
+def activate_harness(root: Path) -> None:
+    root = root.resolve()
+    root.mkdir(parents=True, exist_ok=True)
+    register_root(root)
+    (root / ".harness-active").touch()
+
+
+def deactivate_harness(root: Path, *, reflection_session: str = "") -> None:
+    root = root.resolve()
+    (root / ".harness-active").unlink(missing_ok=True)
+    data = load_registry()
+    data["roots"] = [entry for entry in data["roots"] if entry != str(root)]
+    data["reflections"].pop(str(root), None)
+    if reflection_session:
+        # Completion may reflect only in the session that finished this run.
+        data["reflections"][str(root)] = reflection_session
+    _write_registry(data)
+
+
+def clear_reflection(root: Path) -> None:
+    data = load_registry()
+    if data["reflections"].pop(str(root.resolve()), None) is not None:
+        _write_registry(data)
+
+
+def find_harness_root(payload: dict[str, Any], *, reflection: bool = False) -> Optional[Path]:
     """Locate the directory containing harness-tasks.json.
 
     Search order:
@@ -113,14 +189,21 @@ def find_harness_root(payload: dict[str, Any]) -> Optional[Path]:
     2. CLAUDE_PROJECT_DIR env var (+ parents)
     3. payload["cwd"] / os.getcwd() (+ parents)
     """
+    registry = load_registry()
+
+    def authorized(root: Path) -> bool:
+        key = str(root.resolve())
+        return key in registry["roots"] or bool(
+            reflection and payload.get("session_id")
+            and registry["reflections"].get(key) == payload["session_id"]
+        )
+
     env_root = os.environ.get("HARNESS_STATE_ROOT")
     if env_root:
         p = Path(env_root)
         if (p / "harness-tasks.json").is_file():
-            try:
-                return p.resolve()
-            except Exception:
-                return p
+            p = p.resolve()
+            return p if authorized(p) else None
 
     candidates: list[Path] = []
     env_dir = os.environ.get("CLAUDE_PROJECT_DIR")
@@ -140,7 +223,7 @@ def find_harness_root(payload: dict[str, Any]) -> Optional[Path]:
         seen.add(str(base))
         for parent in [base, *list(base.parents)[:8]]:
             if (parent / "harness-tasks.json").is_file():
-                return parent
+                return parent if authorized(parent) else None
     return None
 
 

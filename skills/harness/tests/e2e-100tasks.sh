@@ -7,6 +7,9 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(mktemp -d /tmp/harness-e2e-XXXXXX)"
 LOG_FILE="${PROJECT_DIR}/test-output.log"
+export HOME="${PROJECT_DIR}/home"
+export USERPROFILE="$HOME"
+mkdir -p "$HOME"
 
 echo "=== Harness E2E Test: 100 tasks + 5 self-reflect ==="
 echo "Project dir: ${PROJECT_DIR}"
@@ -62,8 +65,8 @@ PYEOF
 # --- 2. Create progress log ---
 touch "${PROJECT_DIR}/harness-progress.txt"
 
-# --- 3. Create .harness-active marker ---
-touch "${PROJECT_DIR}/.harness-active"
+# --- 3. Register and activate this temporary harness root ---
+python3 "${SCRIPT_DIR}/../scripts/activation.py" activate "${PROJECT_DIR}"
 
 # --- 4. Init git repo (required for harness commit tracking) ---
 cd "${PROJECT_DIR}"

@@ -28,11 +28,14 @@ Executable protocol enabling any agent task to run continuously across multiple 
 
 ## Activation Marker
 
-Hooks only take effect when `.harness-active` marker file exists in the harness root (same directory as `harness-tasks.json`).
+(use python on Windows if python3 is unavailable)
 
-- `/harness init` and `/harness run` MUST create this marker: `touch <project-path>/.harness-active`
-- When a nonempty task list completes (no pending/in_progress/retryable left), remove it: `rm <project-path>/.harness-active`; an empty list leaves the marker unchanged and does not trigger reflection.
-- Without this marker, all hooks are no-ops — they exit 0 immediately
+Hooks require both a `.harness-active` marker beside `harness-tasks.json` and a resolved root path registered in the user-local `~/.claude/harness-state/registry.json`. Repository files alone cannot activate hooks; this also applies to parent-directory discovery and `HARNESS_STATE_ROOT`. Registry updates are atomic and private (0600 on POSIX).
+
+- `/harness init` and `/harness run` MUST activate automatically, without an extra prompt, using `python3 <skill-dir>/scripts/activation.py activate <project-path>` after initializing state. This registers the root and creates the marker; do not use `touch` alone.
+- To deactivate, run `python3 <skill-dir>/scripts/activation.py deactivate <project-path>`. This removes the marker and unregisters the root.
+- When a nonempty task list completes (no pending/in_progress/retryable left), the Stop hook deactivates automatically. A session-specific user-local authorization preserves completion reflection without authorizing task hooks. An empty list leaves activation unchanged and does not trigger reflection.
+- Unregistered roots or absent active markers make task hooks silent no-ops (exit 0).
 
 ## Progress Persistence (Dual-File System)
 
@@ -348,7 +351,7 @@ At session end, update `harness-tasks.json`: set `last_session` to current times
 
 1. Create `harness-progress.txt` with initialization entry
 2. Create `harness-tasks.json` with empty task list and default `session_config`
-3. Optionally create `harness-init.sh` template (chmod +x)
+3. Activate with `python3 <skill-dir>/scripts/activation.py activate <project-path>` (registers the resolved root and creates `.harness-active`), then optionally create `harness-init.sh` template (chmod +x)
 4. Ask user: add harness files to `.gitignore`?
 
 ## Status Command (`/harness status`)

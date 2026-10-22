@@ -27,38 +27,7 @@ DEFAULT_MAX_ITERATIONS = 5
 
 
 def _find_harness_root(payload: dict[str, Any]) -> Optional[Path]:
-    """查找 harness-tasks.json 所在的目录。存在则说明 harness 曾被使用。"""
-    if hc is not None:
-        return hc.find_harness_root(payload)
-
-    # Fallback: inline discovery if _harness_common not available
-    candidates: list[Path] = []
-    state_root = os.environ.get("HARNESS_STATE_ROOT")
-    if state_root:
-        p = Path(state_root)
-        if (p / "harness-tasks.json").is_file():
-            try:
-                return p.resolve()
-            except Exception:
-                return p
-    env_dir = os.environ.get("CLAUDE_PROJECT_DIR")
-    if env_dir:
-        candidates.append(Path(env_dir))
-    cwd = payload.get("cwd") or os.getcwd()
-    candidates.append(Path(cwd))
-    seen: set[str] = set()
-    for base in candidates:
-        try:
-            base = base.resolve()
-        except Exception:
-            continue
-        if str(base) in seen:
-            continue
-        seen.add(str(base))
-        for parent in [base, *list(base.parents)[:8]]:
-            if (parent / "harness-tasks.json").is_file():
-                return parent
-    return None
+    return hc.find_harness_root(payload, reflection=True)
 
 
 def _read_counter(marker: Path) -> int:
@@ -152,6 +121,7 @@ def main() -> int:
         marker_session = None
     if marker_session != session_id:
         marker.unlink(missing_ok=True)
+        hc.clear_reflection(root)
         return 0
 
     # 读取最大迭代次数
@@ -171,6 +141,7 @@ def main() -> int:
     if count >= max_iter:
         try:
             marker.unlink(missing_ok=True)
+            hc.clear_reflection(root)
         except Exception:
             pass
         return 0

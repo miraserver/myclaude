@@ -15,6 +15,9 @@ import unittest
 from pathlib import Path
 
 HOOKS_DIR = Path(__file__).resolve().parent.parent / "hooks"
+sys.path.insert(0, str(HOOKS_DIR))
+from _harness_common import activate_harness, deactivate_harness, register_root
+
 STOP_HOOK = HOOKS_DIR / "harness-stop.py"
 SESSION_HOOK = HOOKS_DIR / "harness-sessionstart.py"
 IDLE_HOOK = HOOKS_DIR / "harness-teammateidle.py"
@@ -58,13 +61,11 @@ def write_tasks(root: Path, tasks: list[dict], **extra) -> None:
 
 
 def activate(root: Path) -> None:
-    (root / ".harness-active").touch()
+    activate_harness(root)
 
 
 def deactivate(root: Path) -> None:
-    p = root / ".harness-active"
-    if p.exists():
-        p.unlink()
+    deactivate_harness(root)
 
 
 # ---------------------------------------------------------------------------
@@ -707,6 +708,7 @@ class TestSelfReflectStopHook(unittest.TestCase):
 
     def _set_reflect(self, session_id="test-reflect-001"):
         """Create .harness-reflect marker (simulates harness completion)."""
+        register_root(self.root)
         (self.root / ".harness-reflect").write_text(json.dumps({"session_id": session_id, "count": 0}), encoding="utf-8")
 
     def test_no_harness_root_is_noop(self):
@@ -805,6 +807,7 @@ class TestSelfReflectStopHook(unittest.TestCase):
             self.assertFalse(marker.exists())
 
     def test_unparseable_marker_starts_at_zero(self):
+        register_root(self.root)
         write_tasks(self.root, [{"id": "t1", "status": "completed"}])
         marker = self.root / ".harness-reflect"
         marker.write_text(json.dumps({"session_id": "test-reflect-001", "count": "invalid count"}), encoding="utf-8")

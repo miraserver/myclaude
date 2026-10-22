@@ -13,7 +13,7 @@ import tempfile
 from pathlib import Path
 from typing import Any, Optional
 
-from _harness_common import read_hook_payload
+from _harness_common import find_harness_root, read_hook_payload
 
 
 def _utc_now() -> _dt.datetime:
@@ -41,36 +41,7 @@ def _parse_iso(ts: Any) -> Optional[_dt.datetime]:
 
 
 def _find_state_root(payload: dict[str, Any]) -> Optional[Path]:
-    state_root = os.environ.get("HARNESS_STATE_ROOT")
-    if state_root:
-        p = Path(state_root)
-        if (p / "harness-tasks.json").is_file():
-            try:
-                return p.resolve()
-            except Exception:
-                return p
-
-    candidates: list[Path] = []
-    env_dir = os.environ.get("CLAUDE_PROJECT_DIR")
-    if env_dir:
-        candidates.append(Path(env_dir))
-
-    cwd = payload.get("cwd") or os.getcwd()
-    candidates.append(Path(cwd))
-
-    seen: set[str] = set()
-    for base in candidates:
-        try:
-            base = base.resolve()
-        except Exception:
-            continue
-        if str(base) in seen:
-            continue
-        seen.add(str(base))
-        for parent in [base, *list(base.parents)[:8]]:
-            if (parent / "harness-tasks.json").is_file():
-                return parent
-    return None
+    return find_harness_root(payload)
 
 
 def _lockdir_for_root(root: Path) -> Path:
@@ -229,7 +200,6 @@ def main() -> int:
     payload = read_hook_payload()
     root = _find_state_root(payload)
     if root is None:
-        print(json.dumps({"claimed": False, "error": "state root not found"}, ensure_ascii=True))
         return 0
 
     tasks_path = root / "harness-tasks.json"
