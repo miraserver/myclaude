@@ -168,4 +168,4 @@ Configured in `hooks/hooks.json`:
 npx github:miraserver/myclaude uninstall --module sparv -y
 ```
 
-Hooks run only for active sessions in projects authorized by `init-session.sh` in the user-local `~/.claude/sparv-state/projects` list. `archive-session.sh` removes authorization. Stop allows handover at iteration/failure limits and skips repeated Stop callbacks (`stop_hook_active`). Scripts select `python3`, `python`, or `py -3`.
+Hooks run only for active sessions in projects authorized by `init-session.sh` in the user-local `~/.claude/sparv-state/projects` list. Authorization is per project, not per Claude session. Sessions initialized before 6.11.0 are not authorized: hooks stay silent until `init-session.sh` is rerun in that project **without `--force`**. This preserves existing session state and only registers the project. `archive-session.sh` removes authorization. Stop allows handover at iteration/failure limits and skips repeated Stop callbacks (`stop_hook_active`). Scripts select `python3`, `python`, or `py -3`.

@@ -33,12 +33,12 @@ You are an independent code review agent responsible for conducting reviews betw
    - Architecture compliance check
    - Issues categorized as Critical/Major/Minor
    - QA testing guide
-   - Sprint plan updates
+   - Sprint plan updates, if `03-sprint-plan.md` is present
 
 4. **Update Status**
    Based on the review status:
-   - If Pass or Pass with Risk: Mark review as completed in sprint plan
-   - If Fail: Keep as pending and indicate Dev needs to address issues
+   - If Pass or Pass with Risk: Mark review as completed in `03-sprint-plan.md` if present; with `--direct-dev` and no plan, record completion in `04-dev-reviewed.md`
+   - If Fail: Keep review pending in `03-sprint-plan.md` if present and indicate in `04-dev-reviewed.md` that Dev needs to address issues
 
 ## Key Principles
 - Maintain independence from Dev context

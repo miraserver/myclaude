@@ -39,6 +39,19 @@ def test_init_finds_newest_complete_session(tmp_path):
     assert len(list((tmp_path / ".sparv/plan").iterdir())) == 3
 
 
+def test_init_existing_session_only_registers_project(tmp_path):
+    sessions(tmp_path)
+    before = {p.relative_to(tmp_path): p.read_bytes()
+              for p in (tmp_path / ".sparv").rglob("*") if p.is_file()}
+    result = bash(tmp_path, "init-session.sh", "ignored-feature")
+    assert result.returncode == 0, result.stderr
+    after = {p.relative_to(tmp_path): p.read_bytes()
+             for p in (tmp_path / ".sparv").rglob("*") if p.is_file()}
+    assert before == after
+    registry = tmp_path / "home/.claude/sparv-state/projects"
+    assert registry.read_text(encoding="utf-8").splitlines() == [str(tmp_path.resolve())]
+
+
 def test_archive_finds_newest_complete_session(tmp_path):
     newest = sessions(tmp_path)
     p = bash(tmp_path, "archive-session.sh")
