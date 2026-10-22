@@ -2,6 +2,33 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### Security
+
+- Decode hook payloads as UTF-8 on Windows ANSI code pages, fixing a pre-bash guard bypass with non-ASCII commands.
+- Never overwrite registries on read errors.
+- Use lock ownership tokens.
+
+### Bug Fixes
+
+- Restore the previous wrapper in `install.bat` when verification fails.
+- Prevent the sparv Stop hook from blocking forever by handling archived sessions, escalation limits, and `stop_hook_active`; act only in projects initialised on this machine.
+- Review the worktree in `/do` worktree mode.
+- Load bundled prompts for `/do` agents.
+- Support `python3` fallbacks on Windows.
+- Log wrapper backend output in parallel mode and report truncated final output and OpenCode error events as failures.
+- Preserve uninstall/update ownership with merged hash records, no deletion of unowned files, tracked `merge_dir` files, and shared files kept between course and standalone skills.
+- Preserve identical user hooks.
+- Install the wrapper with the standalone codeagent skill.
+- Relocate prompt paths for `--install-dir`.
+- Support bmad `--direct-dev` without a sprint plan.
+
+### Changed
+
+- Keep locally modified module files during `--update`; use `--force` to overwrite them.
+- Automatically withdraw a release to draft when the post-release smoke test fails.
+
 ## [6.10.1] - 2026-10-22
 
 ### 🐛 Bug Fixes

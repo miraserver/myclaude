@@ -222,6 +222,10 @@ npx github:miraserver/myclaude --install-dir ~/.claude --force
 
 `--update` 会检测目标安装目录（默认 `~/.claude`，通过 `installed_modules.json` 跟踪）中已安装的模块和独立技能，并更新到最新发布版本。以 `skill:<name>` 选择的独立技能现在与模块一样，支持安装记录跟踪、更新和卸载。
 
+`--update` 会保留你在本地修改的文件，并输出 `Keeping ... modified locally`；使用 `--force` 可覆盖这些文件。
+
+SPARV 钩子仅对在本机通过 sparv 技能初始化、并注册在 `~/.claude/sparv-state` 中的项目生效。
+
 默认不再安装全局 `CLAUDE.md`。使用 `--with-claude-md` 显式启用；已有的 `CLAUDE.md` 永远不会被覆盖：
 
 ```bash

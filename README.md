@@ -81,6 +81,10 @@ npx github:miraserver/myclaude --install-dir ~/.claude --force
 
 `--update` detects installed modules and standalone skills in the target install directory (default: `~/.claude`, tracked in `installed_modules.json`) and updates them to the latest release. Standalone skills selected as `skill:<name>` are tracked, updated, and uninstalled like modules.
 
+`--update` keeps files you modified locally and prints `Keeping ... modified locally`; use `--force` to overwrite them.
+
+SPARV hooks act only in projects initialised via the sparv skill on this machine, registered in `~/.claude/sparv-state`.
+
 Global `CLAUDE.md` is no longer installed by default. Opt in with `--with-claude-md`; an existing `CLAUDE.md` is never overwritten:
 
 ```bash
