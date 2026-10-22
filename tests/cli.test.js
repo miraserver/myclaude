@@ -3,10 +3,11 @@
 const assert = require("node:assert/strict");
 const crypto = require("node:crypto");
 const fs = require("node:fs");
+const http = require("node:http");
 const os = require("node:os");
 const path = require("node:path");
 const { test } = require("node:test");
-const { spawnSync } = require("node:child_process");
+const { execFile, spawnSync } = require("node:child_process");
 const vm = require("node:vm");
 
 // Keep every in-process and spawned installer test away from the developer's home.
@@ -653,7 +654,7 @@ test("module merge reconciles all hook sources together", (t) => {
     fs.writeFileSync(path.join(dir, "hooks.json"), JSON.stringify(config));
   }
   assert.equal(mergeModuleHooks("claudekit", mod, f.installDir), true);
-  assert.deepEqual(Object.keys(f.read().hooks), ["Stop", "PreToolUse", "UserPromptSubmit"]);
+  assert.deepEqual(Object.keys(f.read().hooks), ["Stop", "PreToolUse"]);
   assert.equal(mergeModuleHooks("claudekit", mod, f.installDir), false);
 });
 
@@ -1422,25 +1423,61 @@ test("update continues all modules after wrapper failure and reports a summary",
   assert.equal(loadInstalledStatus(f.installDir).modules.later.status, "success");
 });
 
+test("install.bat PowerShell invocations contain no exclamation marks", () => {
+  const script = fs.readFileSync(path.resolve(__dirname, "../install.bat"), "utf8");
+  const lines = script.split(/\r?\n/).filter((line) => /\bpowershell\s+.*-Command\b/i.test(line));
+  assert.ok(lines.length > 0, "Expected PowerShell command invocations");
+  for (const line of lines) assert.equal(line.includes("!"), false, line);
+});
+
 for (const scenario of ["valid", "mismatch", "missing", "unlisted"]) {
-  test(`install.bat checksum verification with injected download: ${scenario}`, (t) => {
-    if (process.platform !== "win32") return t.skip("Windows PowerShell");
+  test(`install.bat checksum verification through cmd.exe: ${scenario}`, async (t) => {
+    if (process.platform !== "win32") return t.skip("Windows cmd.exe and PowerShell");
     const f = fixture(t);
     const binary = path.join(f.installDir, "wrapper.exe");
     fs.writeFileSync(binary, "local binary bytes");
     const hash = crypto.createHash("sha256").update("local binary bytes").digest("hex");
     const script = fs.readFileSync(path.resolve(__dirname, "../install.bat"), "utf8");
-    const line = script.split(/\r?\n/).find((line) => line.startsWith('powershell -NoLogo -NoProfile -Command'));
-    const command = line.slice(line.indexOf('-Command "') + 10, -1);
-    const injected = scenario === "missing"
-      ? 'function Invoke-WebRequest { $e = New-Object System.Net.WebException; $response = [pscustomobject]@{ StatusCode = 404 }; $e | Add-Member -MemberType NoteProperty -Name Response -Value $response -Force; throw $e }; '
-      : `function Invoke-WebRequest { [pscustomobject]@{ Content = '${scenario === "mismatch" ? "0".repeat(64) : hash}  ${scenario === "unlisted" ? "other.exe" : "wrapper.exe"}' } }; `;
-    const result = spawnSync("powershell", ["-NoLogo", "-NoProfile", "-Command", injected + command], {
-      encoding: "utf8", timeout: 10000, env: { ...process.env, HOME: f.installDir, USERPROFILE: f.installDir,
-        URL: "https://invalid.example/release/wrapper.exe", TEMP_FILE: binary, BINARY_NAME: "wrapper.exe" },
+    const label = script.match(/^:verify_checksum\r?\n[\s\S]*?^exit \/b %errorlevel%[^\S\r\n]*(?:\r?\n|$)/m);
+    assert.ok(label, "Expected the complete verify_checksum label");
+    const requests = [];
+    const server = http.createServer((req, res) => {
+      requests.push(req.url);
+      if (req.url !== "/release/SHA256SUMS" || scenario === "missing") {
+        res.writeHead(404);
+        res.end();
+        return;
+      }
+      res.writeHead(200, { "Content-Type": "text/plain" });
+      res.end(`${scenario === "mismatch" ? "0".repeat(64) : hash}  ${scenario === "unlisted" ? "other.exe" : "wrapper.exe"}\n`);
+    });
+    t.after(() => new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve())));
+    await new Promise((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(0, "127.0.0.1", resolve);
+    });
+    const harness = path.join(f.installDir, "checksum.bat");
+    fs.writeFileSync(harness, [
+      "@echo off", "setlocal enabledelayedexpansion",
+      `set "URL=http://127.0.0.1:${server.address().port}/release/wrapper.exe"`,
+      `set "TEMP_FILE=${binary}"`, 'set "BINARY_NAME=wrapper.exe"',
+      "call :verify_checksum", "exit /b !errorlevel!", "",
+    ].join("\r\n") + label[0]);
+    // Keep the event loop free so the local HTTP server can serve PowerShell.
+    const result = await new Promise((resolve, reject) => {
+      execFile("cmd.exe", ["/d", "/s", "/c", `""${harness}""`], {
+        encoding: "utf8", timeout: 30000, windowsHide: true, windowsVerbatimArguments: true,
+        cwd: f.installDir,
+        env: { ...process.env, HOME: f.installDir, USERPROFILE: f.installDir, TEMP: f.installDir, TMP: f.installDir },
+      }, (error, stdout, stderr) => {
+        if (error && (typeof error.code !== "number" || error.killed)) return reject(error);
+        resolve({ status: error ? error.code : 0, stdout, stderr });
+      });
     });
     assert.equal(result.status, ["valid", "missing"].includes(scenario) ? 0 : 1, result.stdout + result.stderr);
     if (scenario === "missing") assert.match(result.stdout, /SHA256SUMS absent/);
+    if (["mismatch", "unlisted"].includes(scenario)) assert.match(result.stdout + result.stderr, /checksum mismatch/);
+    assert.deepEqual(requests, ["/release/SHA256SUMS"]);
   });
 }
 
