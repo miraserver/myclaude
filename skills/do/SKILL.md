@@ -45,6 +45,8 @@ python3 "$HOME/.claude/skills/do/scripts/task.py" list
 
 When the phase reaches its maximum, the Stop hook runs `verify_command`. It blocks for up to five attempts with failing output and marks the task completed when verification passes. The task binds to the session that first stops; abandon it with `task.py finish`, and change the command with `set-verify`.
 
+Setting `status: "cancelled"` skips blocking and verification. On a `verify_failed` task, `set-verify` resets the verification attempt budget and returns the task to `in_progress`. `DO_VERIFY_TIMEOUT` sets the timeout in seconds (default 1500); timed-out verification kills the command's process tree and collects output for at most five more seconds.
+
 ## Worktree Mode
 
 The worktree is created **only when needed** (right before Phase 4: Implement). If the user chooses worktree mode:

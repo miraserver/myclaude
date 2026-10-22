@@ -5,16 +5,17 @@ from __future__ import annotations
 
 import json
 import os
+import signal
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 MAX_BLOCKS = 5
-STATE_FILE = ".stop-state.json"
 
 try:
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
-    from task import DIR_TASKS, PHASE_NAMES, load_task, save_task
+    from task import DIR_TASKS, PHASE_NAMES, STATE_FILE, load_task, save_task
 except Exception as error:
     IMPORT_ERROR = error
 else:
@@ -89,32 +90,75 @@ def block_incomplete(frontmatter: dict, state_path: str, state: dict) -> None:
     emit({"decision": "block", "reason": reason})
 
 
-def normalize_output(output) -> str:
-    """Decode timeout output, which can be bytes even in text mode."""
-    if isinstance(output, bytes):
-        return output.decode("utf-8", errors="replace")
-    return output if isinstance(output, str) else ""
+def _verify_timeout() -> int:
+    """Leave a margin before the Stop hook's own 1800-second timeout."""
+    value = os.environ.get("DO_VERIFY_TIMEOUT")
+    if value is None:
+        return 1500
+    try:
+        timeout = int(value)
+    except ValueError:
+        timeout = 0
+    if timeout <= 0:
+        print("Warning: Invalid DO_VERIFY_TIMEOUT; using 1500 seconds.", file=sys.stderr)
+        return 1500
+    return min(timeout, 1740)
+
+
+def _kill_tree(proc) -> None:
+    """Terminate descendants before falling back to killing the shell."""
+    if os.name == "nt":
+        try:
+            subprocess.run(
+                ["taskkill", "/T", "/F", "/PID", str(proc.pid)],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+    else:
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except OSError:
+            pass
+    try:
+        proc.kill()
+    except OSError:
+        pass
+
+
+def _wait_for_verification(proc, timeout: int) -> bool:
+    """Return whether verification timed out, with a bounded cleanup wait."""
+    try:
+        proc.wait(timeout=timeout)
+        return False
+    except subprocess.TimeoutExpired:
+        _kill_tree(proc)
+    try:
+        proc.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        pass
+    return True
 
 
 def run_verification(command: str, directory: str) -> tuple[int | str, str]:
     """Run the configured shell command and preserve useful timeout output."""
-    timeout = int(os.environ.get("DO_VERIFY_TIMEOUT") or 1500)
-    try:
-        result = subprocess.run(
+    timeout = _verify_timeout()
+    with tempfile.TemporaryFile() as tmp:
+        proc = subprocess.Popen(
             command,
             shell=True,
             cwd=directory,
-            stdout=subprocess.PIPE,
+            stdout=tmp,
             stderr=subprocess.STDOUT,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=timeout,
+            **({"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP}
+               if os.name == "nt" else {"start_new_session": True}),
         )
-    except subprocess.TimeoutExpired as error:
-        output = normalize_output(error.stdout)
+        timed_out = _wait_for_verification(proc, timeout)
+        tmp.seek(0)
+        output = tmp.read().decode("utf-8", errors="replace")
+    if timed_out:
         return "timeout", f"{output}\nVerification timed out after {timeout} seconds."
-    return result.returncode, normalize_output(result.stdout)
+    return proc.returncode, output
 
 
 def verify_task(loaded: tuple, project_dir: str, state_path: str, state: dict) -> None:
@@ -163,7 +207,7 @@ def main() -> None:
     if not loaded:
         return
     task_md_path, frontmatter, body = loaded
-    if frontmatter.get("status") in ("completed", "verify_failed"):
+    if frontmatter.get("status") in ("completed", "verify_failed", "cancelled"):
         return
     session_id = nonempty_string(payload.get("session_id"))
     task_session_id = nonempty_string(frontmatter.get("session_id"))

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import base64
+import copy
+import importlib.util
 import json
 import os
 import shlex
@@ -8,6 +10,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from unittest.mock import patch
 from pathlib import Path
@@ -39,6 +42,7 @@ class DoHookTests(unittest.TestCase):
         self.addCleanup(project_patcher.stop)
         self.environment = os.environ.copy()
         self.environment.pop("CLAUDE_PROJECT_DIR", None)
+        self.environment["CLAUDE_PROJECT_DIR"] = str(self.project)
         for arguments in (
             ["init"],
             ["-c", "user.name=Do Test", "-c", "user.email=do@example.test",
@@ -77,7 +81,7 @@ class DoHookTests(unittest.TestCase):
         frontmatter.update(values)
         self._write_task(frontmatter, body)
 
-    def _stop(self, payload=None, environment=None):
+    def _stop(self, payload=None, environment=None, timeout=8):
         data = {"hook_event_name": "Stop", "session_id": self.session_id, "cwd": str(self.project)}
         if payload:
             data.update(payload)
@@ -94,7 +98,7 @@ class DoHookTests(unittest.TestCase):
             errors="replace",
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            timeout=8,
+            timeout=timeout,
         )
 
     def _stop_json(self, payload=None, environment=None):
@@ -130,7 +134,7 @@ class DoHookTests(unittest.TestCase):
         )
 
     def _read_stop_state(self):
-        state_path = self.project / ".claude" / "do-tasks" / ".stop-state.json"
+        state_path = self.project / ".claude" / "do-tasks" / task.STATE_FILE
         return json.loads(state_path.read_text(encoding="utf-8"))
 
     def test_no_current_task_allows_with_empty_stdout(self):
@@ -211,7 +215,7 @@ class DoHookTests(unittest.TestCase):
     def test_legacy_stop_state_without_phase_gets_fresh_budget(self):
         current = self._create_task()
         self._set_task(current_phase=2, max_phases=5, phase_name="Clarify")
-        state_path = self.project / ".claude" / "do-tasks" / ".stop-state.json"
+        state_path = self.project / ".claude" / "do-tasks" / task.STATE_FILE
         state_path.write_text(
             json.dumps({"task": os.path.relpath(current, self.project), "blocks": 5}),
             encoding="utf-8",
@@ -270,6 +274,68 @@ class DoHookTests(unittest.TestCase):
         self.assertEqual(result.stdout, "")
         frontmatter, _ = self._read_task()
         self.assertEqual(frontmatter.get("status"), "completed")
+
+    def test_cancelled_task_neither_blocks_nor_verifies(self):
+        self._create_task()
+        self._set_task(
+            status="cancelled", current_phase=5,
+            verify_command=python_command(
+                "from pathlib import Path;Path('unexpected-verify').touch()"
+            ),
+        )
+        before = self._read_task()
+        result = self._stop()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, "")
+        self.assertFalse((self.project / "unexpected-verify").exists())
+        self.assertFalse((self.project / task.DIR_TASKS / task.STATE_FILE).exists())
+        self.assertEqual(self._read_task(), before)
+
+    def test_set_verify_restarts_failed_task_with_fresh_budget(self):
+        self._create_task()
+        for exit_code in (7, 0):
+            with self.subTest(exit_code=exit_code):
+                self._set_task(status="verify_failed", current_phase=5,
+                               session_id=self.session_id)
+                state_path = self.project / task.DIR_TASKS / task.STATE_FILE
+                state_path.write_text(json.dumps({
+                    "task": os.path.relpath(self._current_task_dir(), self.project),
+                    "phase": 5, "blocks": 5,
+                }), encoding="utf-8")
+                command = python_command(
+                    "from pathlib import Path;import sys;"
+                    "Path('restarted-verify').write_text('ran');"
+                    f"sys.exit({exit_code})"
+                )
+                result = self._task_cli("set-verify", command)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(self._read_task()[0]["status"], "in_progress")
+                self.assertFalse(state_path.exists())
+                _, output = self._stop_json()
+                self.assertEqual((self.project / "restarted-verify").read_text(), "ran")
+                (self.project / "restarted-verify").unlink()
+                if exit_code:
+                    self.assertEqual(output.get("decision"), "block")
+                    self.assertIn("attempt 1/5", output["reason"])
+                    self.assertEqual(self._read_stop_state()["blocks"], 1)
+                    self.assertEqual(self._read_task()[0]["status"], "in_progress")
+                else:
+                    self.assertEqual(output, {})
+                    self.assertEqual(self._read_task()[0]["status"], "completed")
+                    self.assertEqual(self._read_stop_state()["blocks"], 0)
+
+    def test_set_verify_preserves_other_statuses_and_stop_state(self):
+        self._create_task()
+        state_path = self.project / task.DIR_TASKS / task.STATE_FILE
+        for status in ("in_progress", "completed", "cancelled"):
+            with self.subTest(status=status):
+                self._set_task(status=status)
+                state_path.write_text('{"blocks": 3}', encoding="utf-8")
+                before = state_path.read_bytes()
+                result = self._task_cli("set-verify", "echo changed")
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(self._read_task()[0]["status"], status)
+                self.assertEqual(state_path.read_bytes(), before)
 
     def test_phase_five_passing_command_runs_once_and_completes(self):
         marker = self.project / "marker.txt"
@@ -357,6 +423,192 @@ class DoHookTests(unittest.TestCase):
         _, output = self._stop_json(environment={"DO_VERIFY_TIMEOUT": "1"})
         self.assertEqual(output.get("decision"), "block")
         self.assertIn("timed out", output.get("reason", "").lower())
+
+    def test_verify_timeout_kills_grandchild_holding_stdout(self):
+        self._create_task()
+        pid_file = self.project / "grandchild.pid"
+        code = (
+            "import subprocess,sys,time;from pathlib import Path;"
+            "child=subprocess.Popen([sys.executable,'-c','import time;time.sleep(60)']);"
+            "Path('grandchild.pid').write_text(str(child.pid));"
+            "print('before timeout',flush=True);time.sleep(60)"
+        )
+        self._set_task(current_phase=5, verify_command=python_command(code))
+        started = time.monotonic()
+        try:
+            result = self._stop(environment={"DO_VERIFY_TIMEOUT": "2"}, timeout=15)
+            self.assertLess(time.monotonic() - started, 15)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            output = json.loads(result.stdout)
+            self.assertEqual(output.get("decision"), "block")
+            self.assertIn("Verification timed out after 2 seconds.", output["reason"])
+            self.assertIn("before timeout", output["reason"])
+            pid = int(pid_file.read_text())
+            if os.name == "nt":
+                listing = subprocess.run(
+                    ["tasklist", "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH"],
+                    capture_output=True, text=True, timeout=5,
+                )
+                self.assertEqual(listing.returncode, 0, listing.stderr)
+                self.assertNotIn(f'"{pid}"', listing.stdout)
+            else:
+                with self.assertRaises(ProcessLookupError):
+                    os.kill(pid, 0)
+        finally:
+            if pid_file.exists():
+                pid = int(pid_file.read_text())
+                if os.name == "nt":
+                    subprocess.run(["taskkill", "/T", "/F", "/PID", str(pid)],
+                                   capture_output=True, timeout=5)
+                else:
+                    try:
+                        os.kill(pid, 9)
+                    except ProcessLookupError:
+                        pass
+
+    def _load_stop_hook(self):
+        spec = importlib.util.spec_from_file_location("do_stop_hook", HOOK)
+        hook = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(hook)
+        return hook
+
+    def test_timeout_output_collection_is_bounded_even_if_process_stays_alive(self):
+        hook = self._load_stop_hook()
+        captured = []
+
+        def start_process(*args, **kwargs):
+            captured.append(kwargs["stdout"])
+            kwargs["stdout"].write(b"partial output\nmore\xff")
+            return proc
+
+        with patch.object(hook.subprocess, "Popen") as popen, \
+                patch.object(hook.subprocess, "run") as taskkill, \
+                patch.dict(os.environ, {"DO_VERIFY_TIMEOUT": "2"}):
+            proc = popen.return_value
+            proc.pid = 12345
+            proc.wait.side_effect = [
+                subprocess.TimeoutExpired("verify", 2),
+                subprocess.TimeoutExpired("verify", 5),
+            ]
+            popen.side_effect = start_process
+            with patch.object(hook.os, "killpg", create=True) as killpg:
+                result = hook.run_verification("verify", str(self.project))
+            self.assertEqual(result, (
+                "timeout", "partial output\nmore\ufffd\nVerification timed out after 2 seconds.",
+            ))
+            self.assertEqual([call.kwargs for call in proc.wait.call_args_list],
+                             [{"timeout": 2}, {"timeout": 5}])
+            proc.communicate.assert_not_called()
+            proc.stdout.close.assert_not_called()
+            self.assertTrue(captured[0].closed)
+            proc.kill.assert_called_once_with()
+            if os.name == "nt":
+                self.assertEqual(popen.call_args.kwargs["creationflags"],
+                                 subprocess.CREATE_NEW_PROCESS_GROUP)
+                taskkill.assert_called_once_with(
+                    ["taskkill", "/T", "/F", "/PID", "12345"],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5,
+                )
+            else:
+                self.assertTrue(popen.call_args.kwargs["start_new_session"])
+                killpg.assert_called_once_with(12345, hook.signal.SIGKILL)
+
+    def test_verification_timeout_parsing(self):
+        hook = self._load_stop_hook()
+        for value, expected in ((None, 1500), ("", 1500), ("abc", 1500),
+                                ("0", 1500), ("-5", 1500), ("60", 60),
+                                ("3600", 1740)):
+            with self.subTest(value=value), patch.dict(os.environ), \
+                    patch("sys.stderr") as stderr:
+                os.environ.pop("DO_VERIFY_TIMEOUT", None)
+                if value is not None:
+                    os.environ["DO_VERIFY_TIMEOUT"] = value
+                self.assertEqual(hook._verify_timeout(), expected)
+                if value in ("", "abc", "0", "-5"):
+                    self.assertIn("Warning", "".join(
+                        call.args[0] for call in stderr.write.call_args_list))
+                else:
+                    stderr.write.assert_not_called()
+
+    def test_verification_captures_success_and_failure_output(self):
+        hook = self._load_stop_hook()
+        for exit_code in (0, 3):
+            with self.subTest(exit_code=exit_code):
+                command = python_command(f"import sys;print('hello');sys.exit({exit_code})")
+                code, output = hook.run_verification(command, str(self.project))
+                self.assertEqual(code, exit_code)
+                self.assertIn("hello", output)
+        self._create_task()
+        self._set_task(current_phase=5, verify_command=command)
+        _, output = self._stop_json()
+        self.assertEqual(output.get("decision"), "block")
+        self.assertIn("exit 3", output["reason"])
+        self.assertIn("hello", output["reason"])
+
+    def test_kill_tree_swallows_termination_errors(self):
+        hook = self._load_stop_hook()
+        with patch.object(hook.subprocess, "Popen") as popen, \
+                patch.object(hook.subprocess, "run", side_effect=OSError), \
+                patch.object(hook.os, "killpg", create=True, side_effect=OSError):
+            proc = popen.return_value
+            proc.pid = 12345
+            proc.kill.side_effect = OSError
+            hook._kill_tree(proc)
+            proc.kill.assert_called_once_with()
+
+    def test_install_and_uninstall_preserve_foreign_hooks(self):
+        spec = importlib.util.spec_from_file_location("do_installer", ROOT / "install.py")
+        installer = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(installer)
+        home = self.project / "temporary home"
+        settings_path = home / ".claude" / "settings.json"
+        installed_hook = home / ".claude" / "skills" / "do" / "hooks" / "stop-hook.py"
+        foreign = {"type": "command", "command": "python3 ~/tools/stop-hook-docs.py",
+                   "timeout": 12}
+        for path in (installed_hook.as_posix(), str(installed_hook).replace("/", "\\"),
+                     installer.HOOK_PATH):
+            with self.subTest(path=path), \
+                    patch.dict(os.environ, {"HOME": str(home), "USERPROFILE": str(home)}), \
+                    patch.object(installer.Path, "home", return_value=home), \
+                    patch.object(installer, "get_settings_path", return_value=settings_path):
+                settings = {"hooks": {"Stop": [{"hooks": [copy.deepcopy(foreign), {
+                    "type": "command", "command": f'python3 "{path}"', "timeout": 10,
+                }]}]}, "other_setting": True}
+                installer.save_settings(settings)
+                installer.install()
+                updated = installer.load_settings()
+                hooks = updated["hooks"]["Stop"][0]["hooks"]
+                self.assertEqual(hooks, [foreign, {
+                    "type": "command", "command": f'python3 "{installed_hook.as_posix()}"',
+                    "timeout": 1800,
+                }])
+                self.assertTrue(installed_hook.is_file())
+                installer.uninstall()
+                self.assertEqual(installer.load_settings(), {
+                    "hooks": {"Stop": [{"hooks": [foreign]}]}, "other_setting": True,
+                })
+                self.assertFalse(installed_hook.exists())
+
+    def test_installer_rejects_other_directories_and_hook_suffixes(self):
+        spec = importlib.util.spec_from_file_location("do_installer", ROOT / "install.py")
+        installer = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(installer)
+        with patch.dict(os.environ, {"HOME": str(self.project), "USERPROFILE": str(self.project)}), \
+                patch.object(installer.Path, "home", return_value=self.project):
+            installed = (self.project / ".claude/skills/do/hooks/stop-hook.py").as_posix()
+            for command in (
+                f'python3 "{installed}.bak"',
+                'python3 "/other/skills/do/hooks/stop-hook.py"',
+                'python3 ~/tools/stop-hook-docs.py',
+            ):
+                self.assertFalse(installer.is_do_hook(command), command)
+            settings = {"hooks": {"Stop": [{"hooks": [{
+                "type": "command", "command": "python3 ~/tools/stop-hook-docs.py",
+            }]}]}}
+            original = copy.deepcopy(settings)
+            installer.add_hook(settings)
+            self.assertEqual(len(settings["hooks"]["Stop"]), 2)
+            self.assertEqual(installer.remove_hook(settings), original)
 
     def test_existing_worktree_dir_is_used_as_verify_cwd(self):
         worktree = self.project / "worktree"

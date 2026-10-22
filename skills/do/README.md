@@ -123,9 +123,11 @@ A Stop hook is registered after installation:
 3. Stop hook checks state, blocks exit if incomplete
 4. Outputs `<promise>DO_COMPLETE</promise>` when finished
 
-Manual exit: Edit `task.md` and set `status: "cancelled"` in the frontmatter.
+Manual exit: Edit `task.md` and set `status: "cancelled"` in the frontmatter; cancelled tasks exit without blocking or running verification.
 
 Set `verify_command` with `setup-do.py --verify "<cmd>"` or the project default in `.claude/do.json`; change it later with `task.py set-verify "<cmd>"`. Tasks bind to the session that first stops. At the maximum phase, the Stop hook runs verification, blocks up to five times with failing output, and marks completed on success. Abandon with `task.py finish`.
+
+On a `verify_failed` task, `set-verify` returns the task to `in_progress` with a fresh verification attempt budget. `DO_VERIFY_TIMEOUT` sets the verification timeout in seconds (default 1500; invalid or nonpositive values use the default, and values above 1740 are clamped to 1740); on timeout the hook kills the command's process tree, waits up to five more seconds for it to exit, and reads captured output from a temporary file. Installing or uninstalling updates only this skill's installed Stop hook path and preserves unrelated hooks.
 
 ## Parallel Execution Examples
 

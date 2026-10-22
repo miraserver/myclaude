@@ -30,6 +30,7 @@ from pathlib import Path
 DIR_TASKS = ".claude/do-tasks"
 FILE_CURRENT_TASK = ".current-task"
 FILE_TASK_MD = "task.md"
+STATE_FILE = ".stop-state.json"
 
 PHASE_NAMES = {
     1: "Understand",
@@ -451,12 +452,21 @@ def update_phase(phase: int) -> bool:
 
 def set_verify(command: str) -> bool:
     """Set or explicitly clear the current task's verification command."""
-    loaded = load_task(get_project_root())
+    project_root = get_project_root()
+    loaded = load_task(project_root)
     if not loaded:
         print("Error: No active task or unreadable task.md.", file=sys.stderr)
         return False
     task_md_path, frontmatter, body = loaded
     frontmatter["verify_command"] = command
+    if frontmatter.get("status") == "verify_failed":
+        # A missing state file gives the next Stop a fresh verification budget.
+        try:
+            Path(project_root, DIR_TASKS, STATE_FILE).unlink(missing_ok=True)
+        except OSError as error:
+            print(f"Error: Failed to reset Stop state: {error}", file=sys.stderr)
+            return False
+        frontmatter["status"] = "in_progress"
     if not write_task_md(task_md_path, frontmatter, body):
         print("Error: Failed to write task.md.", file=sys.stderr)
         return False

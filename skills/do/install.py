@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
 """Install/uninstall do skill to ~/.claude/skills/do"""
+from __future__ import annotations
+
 import argparse
 import json
 import os
+import re
 import shutil
 import sys
 from pathlib import Path
@@ -44,6 +47,17 @@ def save_settings(settings: dict):
     with open(path, "w", encoding="utf-8") as f:
         json.dump(settings, f, indent=2)
 
+def is_do_hook(command: str) -> bool:
+    """Match only the installed hook path, including legacy native separators."""
+    command = command.replace("\\", "/")
+    paths = (HOOK_PATH, Path(HOOK_PATH).expanduser().as_posix())
+    return any(
+        re.search(r"(?:^|[\s\"'])" + re.escape(path) + r"(?=$|[\s\"'])",
+                  command, re.IGNORECASE if os.name == "nt" else 0)
+        for path in paths
+    )
+
+
 def add_hook(settings: dict) -> dict:
     hook_command = Path(HOOK_PATH).expanduser().as_posix()
     hook_entry = {
@@ -62,7 +76,7 @@ def add_hook(settings: dict) -> dict:
     for item in stop_hooks:
         if "hooks" in item:
             for h in item["hooks"]:
-                if "stop-hook" in h.get("command", "") and "do" in h.get("command", ""):
+                if is_do_hook(h.get("command", "")):
                     h["command"] = hook_entry["command"]
                     h["timeout"] = hook_entry["timeout"]
                     return settings
@@ -80,8 +94,7 @@ def remove_hook(settings: dict) -> dict:
     for item in stop_hooks:
         if "hooks" in item:
             filtered = [h for h in item["hooks"]
-                       if "stop-hook" not in h.get("command", "")
-                       or "do" not in h.get("command", "")]
+                       if not is_do_hook(h.get("command", ""))]
             if filtered:
                 item["hooks"] = filtered
                 new_stop_hooks.append(item)
