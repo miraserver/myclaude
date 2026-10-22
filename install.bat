@@ -60,6 +60,8 @@ if errorlevel 1 (
 "%DEST%" --version >nul 2>nul
 if errorlevel 1 (
     echo ERROR: installation verification failed.
+    del /f /q "%DEST%" >nul 2>nul
+    if exist "%DEST%.old" move /y "%DEST%.old" "%DEST%" >nul 2>nul
     goto :fail
 )
 
@@ -218,6 +220,6 @@ goto :cleanup
 
 :cleanup
 if exist "%TEMP_FILE%" del /f /q "%TEMP_FILE%" >nul 2>nul
-if exist "%DEST%.old" del /f /q "%DEST%.old" >nul 2>nul
+if "%EXIT_CODE%"=="0" if exist "%DEST%.old" del /f /q "%DEST%.old" >nul 2>nul
 set "CODE=%EXIT_CODE%"
 endlocal & exit /b %CODE%

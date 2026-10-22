@@ -186,6 +186,22 @@ jobs:
           draft: false
           prerelease: false
 
+  withdraw:
+    name: Withdraw release after smoke failure
+    needs: [smoke]
+    if: failure()
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Return failed release to draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release edit "$GITHUB_REF_NAME" --draft=true -R "$GITHUB_REPOSITORY"
+          echo "Post-release smoke failed; release $GITHUB_REF_NAME has been returned to draft." >&2
+          exit 1
+
   smoke:
     name: Post-release smoke (${{ matrix.os }})
     needs: release

@@ -73,13 +73,23 @@ mkdir -p "$BIN_DIR"
 
 WRAPPER_PATH="${BIN_DIR}/codeagent-wrapper"
 if [ "$OS" = "windows" ]; then WRAPPER_PATH="${WRAPPER_PATH}.exe"; fi
-mv "$DOWNLOAD_FILE" "$WRAPPER_PATH"
-chmod +x "$WRAPPER_PATH"
+if [ -e "$WRAPPER_PATH" ]; then
+    mv -f "$WRAPPER_PATH" "$WRAPPER_PATH.old"
+fi
+if ! mv "$DOWNLOAD_FILE" "$WRAPPER_PATH" || ! chmod +x "$WRAPPER_PATH"; then
+    echo "ERROR: unable to install binary" >&2
+    rm -f "$WRAPPER_PATH"
+    if [ -e "$WRAPPER_PATH.old" ]; then mv -f "$WRAPPER_PATH.old" "$WRAPPER_PATH"; fi
+    exit 1
+fi
 
 if "$WRAPPER_PATH" --version >/dev/null 2>&1; then
+    rm -f "$WRAPPER_PATH.old"
     echo "codeagent-wrapper installed successfully to ${WRAPPER_PATH}"
 else
     echo "ERROR: installation verification failed" >&2
+    rm -f "$WRAPPER_PATH"
+    if [ -e "$WRAPPER_PATH.old" ]; then mv -f "$WRAPPER_PATH.old" "$WRAPPER_PATH"; fi
     exit 1
 fi
 
