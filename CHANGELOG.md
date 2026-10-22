@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### Bug Fixes
+
+- Exclude `.claude-plugin/` from `merge_dir` installs and clean up legacy shared `plugin.json` ownership during `--update` and uninstall, avoiding false "modified locally" warnings.
+- Fail fast with "workdir not found" for missing wrapper working directories, with a Windows hint for POSIX paths.
+- Report missing content in the middle of a Gemini answer as a failure.
+
+### Changed
+
+- Add a regression guard against two modules writing to the same install path.
+
 ## [6.11.1] - 2026-10-22
 
 ### Bug Fixes
