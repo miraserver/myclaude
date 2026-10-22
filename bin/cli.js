@@ -885,7 +885,10 @@ async function copyFile(src, dst, force, files, installDir, previous = {}, expli
     process.stdout.write(`Keeping ${dst}: modified locally (use --force to overwrite)\n`);
     return false;
   }
-  if (!force && fs.existsSync(dst)) return false;
+  if (!force && fs.existsSync(dst)) {
+    if (files && await filesIdentical(src, dst)) files[rel] = fileHash(await fs.promises.readFile(src));
+    return false;
+  }
   await fs.promises.mkdir(path.dirname(dst), { recursive: true });
   await fs.promises.copyFile(src, dst);
   const st = await fs.promises.stat(src);
@@ -1036,12 +1039,22 @@ function unmergeModuleAgents(moduleName, config, installDir) {
     for (const [other, status] of Object.entries(installed)) {
       const replacement = config.modules[other] && config.modules[other].agents && config.modules[other].agents[name];
       if (other !== moduleName && status.status === "success" && replacement) {
-        models.agents[name] = { ...replacement, __module__: other, __hash__: agentDefaultsHash(replacement) };
+        const defaults = relocatedAgentDefaults(replacement, installDir);
+        models.agents[name] = { ...defaults, __module__: other, __hash__: agentDefaultsHash(defaults) };
         break;
       }
     }
   }
   if (modified) writeModels(modelsPath, models);
+}
+
+function relocatedAgentDefaults(agentCfg, installDir) {
+  const defaults = { ...agentCfg };
+  if (path.resolve(installDir) !== path.resolve(os.homedir(), ".claude") &&
+      typeof defaults.prompt_file === "string" && defaults.prompt_file.startsWith("~/.claude/")) {
+    defaults.prompt_file = path.join(installDir, defaults.prompt_file.slice("~/.claude/".length)).replace(/\\/g, "/");
+  }
+  return defaults;
 }
 
 function mergeModuleAgentsToModels(moduleName, mod, repoRoot, installDir = path.join(os.homedir(), ".claude")) {
@@ -1076,11 +1089,7 @@ function mergeModuleAgentsToModels(moduleName, mod, repoRoot, installDir = path.
     if (!canOverwrite) continue;
     if (isPlainObject(existing) && Object.prototype.hasOwnProperty.call(existing, "__hash__") &&
         agentDefaultsHash(existing) !== existing.__hash__) continue;
-    const defaults = { ...agentCfg };
-    if (path.resolve(installDir) !== path.resolve(os.homedir(), ".claude") &&
-        typeof defaults.prompt_file === "string" && defaults.prompt_file.startsWith("~/.claude/")) {
-      defaults.prompt_file = path.join(installDir, defaults.prompt_file.slice("~/.claude/".length)).replace(/\\/g, "/");
-    }
+    const defaults = relocatedAgentDefaults(agentCfg, installDir);
     const next = { ...defaults, __module__: moduleName, __hash__: agentDefaultsHash(defaults) };
     if (!deepEqual(existing, next)) {
       models.agents[agentName] = next;
@@ -1246,8 +1255,8 @@ async function uninstallModule(moduleName, config, repoRoot, installDir, dryRun)
   const hasFiles = isPlainObject(moduleStatus.files);
   const recordedFiles = ownershipFiles(moduleStatus);
   const keptMerge = new Set();
-  function sharedFile(rel) {
-    return Object.entries(status.modules).some(([name, entry]) => {
+  function sharedFiles(rel) {
+    return Object.entries(status.modules).filter(([name, entry]) => {
       if (name === moduleName || !["installed", "success", "partial_uninstall"].includes(entry.status)) return false;
       if (Object.prototype.hasOwnProperty.call(ownershipFiles(entry), rel) ||
           (Array.isArray(entry.merge_dir_files) && entry.merge_dir_files.filter(canonicalFileKey).includes(rel))) return true;
@@ -1274,11 +1283,7 @@ async function uninstallModule(moduleName, config, repoRoot, installDir, dryRun)
     processed.add(rel);
     if (!fs.existsSync(target)) return;
     const recorded = Object.prototype.hasOwnProperty.call(recordedFiles, rel);
-    if (hasFiles && !recorded) return;
-    if (sharedFile(rel)) {
-      process.stdout.write(`Keeping ${target}: shared with another installed module\n`);
-      return;
-    }
+    if (hasFiles && !recorded && !(recordedMerge && recordedMerge.includes(rel))) return;
     let expected = recorded ? recordedFiles[rel] : undefined;
     const keep = () => {
       if (expected !== undefined) keptFiles[rel] = expected;
@@ -1303,6 +1308,18 @@ async function uninstallModule(moduleName, config, repoRoot, installDir, dryRun)
         // Single-file copies retain their legacy source-unavailable removal behavior.
         if (requireSource) return;
       }
+    }
+    const shared = sharedFiles(rel);
+    if (shared.length) {
+      if (!dryRun && expected !== undefined) {
+        for (const [name, entry] of shared) {
+          if (Object.prototype.hasOwnProperty.call(ownershipFiles(entry), rel)) continue;
+          entry.files = { ...ownershipFiles(entry), [rel]: expected };
+          upsertModuleStatus(installDir, { ...entry, module: name });
+        }
+      }
+      process.stdout.write(`Keeping ${target}: shared with another installed module\n`);
+      return;
     }
     if (expected !== undefined && (!fs.lstatSync(target).isFile() ||
         fileHash(await fs.promises.readFile(target)) !== expected)) {

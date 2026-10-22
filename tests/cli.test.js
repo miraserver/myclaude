@@ -1836,7 +1836,7 @@ for (const type of ["copy_file", "copy_dir", "merge_dir"]) {
     const op = type === "copy_file" ? { type, source: "source/commands/user.md", target: "commands/user.md" } :
       { type, source: type === "copy_dir" ? "source/commands" : "source", target: "commands" };
     const config = { modules: { demo: { operations: [op] } } };
-    upsertModuleStatus(f.installDir, { module: "demo", files: {}, merge_dir_files: ["commands/user.md"] });
+    upsertModuleStatus(f.installDir, { module: "demo", files: {}, merge_dir_files: [] });
     await uninstallModule("demo", config, repo, f.installDir, false);
     assert.equal(fs.readFileSync(path.join(f.installDir, "commands", "user.md"), "utf8"), "same");
   });
@@ -2015,4 +2015,88 @@ test("I2 merge_dir respects a files hash even without a legacy merge_dir_files l
   assert.match(s.output(), /Keeping .*demo: modified locally \(use --force to overwrite\)/);
   assert.equal(r.files["commands/demo"], sha256("v1"));
   assert.equal(fs.readFileSync(path.join(f.installDir, "commands", "demo"), "utf8"), "user");
+});
+
+
+test("batch 9 legacy empty files map honors merge_dir ownership and source comparison", async (t) => {
+  const f = fixture(t);
+  const repo = path.join(f.installDir, "repo");
+  fs.mkdirSync(path.join(repo, "source", "commands"), { recursive: true });
+  fs.mkdirSync(path.join(f.installDir, "commands"));
+  for (const name of ["clean", "edited", "foreign"]) {
+    fs.writeFileSync(path.join(repo, "source", "commands", name), "original");
+    fs.writeFileSync(path.join(f.installDir, "commands", name), name === "edited" ? "user edit" : "original");
+  }
+  upsertModuleStatus(f.installDir, { module: "demo", status: "success", files: {},
+    merge_dir_files: ["commands/clean", "commands/edited"] });
+  const s = requirementSandbox(repo);
+  await s.api.uninstallModule("demo", { modules: { demo: { operations: [{ type: "merge_dir", source: "source" }] } } }, repo, f.installDir, false);
+  assert.equal(fs.existsSync(path.join(f.installDir, "commands", "clean")), false);
+  assert.equal(fs.readFileSync(path.join(f.installDir, "commands", "edited"), "utf8"), "user edit");
+  assert.equal(fs.readFileSync(path.join(f.installDir, "commands", "foreign"), "utf8"), "original");
+  assert.match(s.output(), /Keeping .*edited: differs from the installed copy/);
+  assert.deepEqual(loadInstalledStatus(f.installDir).modules.demo.merge_dir_files, ["commands/edited"]);
+});
+
+for (const legacy of [false, true]) {
+  for (const first of ["course", "skill:dev"]) {
+    for (const edited of [false, true]) {
+      test(`batch 9 shared dev files: legacy=${legacy}, first=${first}, edited=${edited}`, async (t) => {
+        const f = fixture(t);
+        const repo = path.join(f.installDir, "repo");
+        const rel = "skills/dev/SKILL.md";
+        fs.mkdirSync(path.dirname(path.join(repo, rel)), { recursive: true });
+        fs.writeFileSync(path.join(repo, rel), "dev default");
+        const config = { modules: { course: { operations: [
+          { type: "copy_dir", source: "skills/dev", target: "skills/dev" },
+        ] } } };
+        const s = requirementSandbox(repo);
+        await s.api.install([{ kind: "module", moduleName: "course" }], null, config, f.installDir, false, false);
+        await s.api.install([{ kind: "skill", skillName: "dev" }], null, config, f.installDir, false, false);
+        const dev = loadInstalledStatus(f.installDir).modules["skill:dev"];
+        if (legacy) upsertModuleStatus(f.installDir, { ...dev, files: {} });
+        else assert.equal(dev.files[rel], sha256("dev default"));
+        if (edited) fs.writeFileSync(path.join(f.installDir, rel), "user edit");
+        const before = fs.readFileSync(path.join(f.installDir, "installed_modules.json"));
+        await s.api.uninstallModule(first, config, repo, f.installDir, true);
+        assert.deepEqual(fs.readFileSync(path.join(f.installDir, "installed_modules.json")), before);
+        await s.api.uninstallModule(first, config, repo, f.installDir, false);
+        const last = first === "course" ? "skill:dev" : "course";
+        assert.equal(loadInstalledStatus(f.installDir).modules[last].files[rel], sha256("dev default"));
+        await s.api.uninstallModule(last, config, repo, f.installDir, false);
+        if (edited) {
+          assert.equal(fs.readFileSync(path.join(f.installDir, rel), "utf8"), "user edit");
+          assert.equal(loadInstalledStatus(f.installDir).modules[last].status, "partial_uninstall");
+          fs.writeFileSync(path.join(f.installDir, rel), "dev default");
+          await s.api.uninstallModule(last, config, repo, f.installDir, false);
+        }
+        assert.equal(fs.existsSync(path.join(f.installDir, rel)), false);
+        assert.deepEqual(loadInstalledStatus(f.installDir).modules, {});
+      });
+    }
+  }
+}
+
+test("batch 9 restored agents retain custom install-dir prompt relocation and hash", async (t) => {
+  const f = fixture(t);
+  const repo = path.join(f.installDir, "repo");
+  const installDir = path.join(f.installDir, "custom");
+  const s = requirementSandbox(repo, f.installDir);
+  const config = { modules: {
+    omo: { agents: { shared: { prompt_file: "~/.claude/skills/omo/default.md" } } },
+    do: { agents: { shared: { prompt_file: "~/.claude/skills/do/default.md" } } },
+  } };
+  for (const name of ["omo", "do"]) {
+    upsertModuleStatus(installDir, await s.api.applyModule(name, config, repo, installDir, false));
+  }
+  const modelsPath = path.join(f.installDir, ".codeagent", "models.json");
+  const readAgent = () => JSON.parse(fs.readFileSync(modelsPath)).agents.shared;
+  assert.equal(readAgent().__module__, "do");
+  await s.api.uninstallModule("do", config, repo, installDir, false);
+  const restored = readAgent();
+  assert.equal(restored.__module__, "omo");
+  assert.equal(restored.prompt_file, path.join(installDir, "skills/omo/default.md").replace(/\\/g, "/"));
+  assert.equal(restored.__hash__, agentDefaultsHash(restored));
+  await s.api.uninstallModule("omo", config, repo, installDir, false);
+  assert.deepEqual(JSON.parse(fs.readFileSync(modelsPath)).agents, {});
 });
