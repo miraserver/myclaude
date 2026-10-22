@@ -2,13 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
-## [Unreleased]
+## [6.11.0] - 2026-10-22
 
 ### Security
 
 - Decode hook payloads as UTF-8 on Windows ANSI code pages, fixing a pre-bash guard bypass with non-ASCII commands.
 - Never overwrite registries on read errors.
-- Use lock ownership tokens.
+- Hold an OS lock for harness/do registry writes; it is released automatically if the process dies.
 
 ### Bug Fixes
 
