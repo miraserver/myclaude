@@ -705,9 +705,9 @@ class TestSelfReflectStopHook(unittest.TestCase):
     def _payload(self, session_id="test-reflect-001", **extra):
         return {"cwd": self.tmpdir, "session_id": session_id, **extra}
 
-    def _set_reflect(self):
+    def _set_reflect(self, session_id="test-reflect-001"):
         """Create .harness-reflect marker (simulates harness completion)."""
-        (self.root / ".harness-reflect").touch()
+        (self.root / ".harness-reflect").write_text(json.dumps({"session_id": session_id, "count": 0}), encoding="utf-8")
 
     def test_no_harness_root_is_noop(self):
         """When harness-tasks.json doesn't exist, hook is a complete no-op."""
@@ -742,8 +742,8 @@ class TestSelfReflectStopHook(unittest.TestCase):
             {"id": "t1", "status": "completed"},
         ])
         deactivate(self.root)
-        self._set_reflect()
         sid = "test-reflect-trigger"
+        self._set_reflect(sid)
         code, stdout, _ = run_hook(REFLECT_HOOK, self._payload(session_id=sid))
         self.assertEqual(code, 0)
         data = json.loads(stdout)
@@ -754,8 +754,8 @@ class TestSelfReflectStopHook(unittest.TestCase):
         """Each invocation increments the iteration counter."""
         write_tasks(self.root, [{"id": "t1", "status": "completed"}])
         deactivate(self.root)
-        self._set_reflect()
         sid = "test-reflect-counter"
+        self._set_reflect(sid)
 
         # First call: iteration 1
         code, stdout, _ = run_hook(REFLECT_HOOK, self._payload(session_id=sid))
@@ -771,11 +771,11 @@ class TestSelfReflectStopHook(unittest.TestCase):
         """After max iterations, hook allows stop and removes .harness-reflect."""
         write_tasks(self.root, [{"id": "t1", "status": "completed"}])
         deactivate(self.root)
-        self._set_reflect()
         sid = "test-reflect-max"
+        self._set_reflect(sid)
 
         # The completion marker holds the count.
-        (self.root / ".harness-reflect").write_text("5", encoding="utf-8")
+        (self.root / ".harness-reflect").write_text(json.dumps({"session_id": sid, "count": 5}), encoding="utf-8")
 
         code, stdout, _ = run_hook(REFLECT_HOOK, self._payload(session_id=sid))
         self.assertEqual(code, 0)
@@ -797,7 +797,7 @@ class TestSelfReflectStopHook(unittest.TestCase):
                 )
                 self.assertEqual((code, stderr), (0, ""))
                 self.assertIn(f"{iteration}/2", json.loads(stdout)["reason"])
-                self.assertEqual(marker.read_text(encoding="utf-8"), str(iteration))
+                self.assertEqual(json.loads(marker.read_text(encoding="utf-8"))["count"], iteration)
                 self.assertEqual(list(self.root.glob("claude-reflect-*")), [])
             self.assertEqual(run_hook(
                 REFLECT_HOOK, self._payload(), {"REFLECT_MAX_ITERATIONS": "2"},
@@ -807,11 +807,11 @@ class TestSelfReflectStopHook(unittest.TestCase):
     def test_unparseable_marker_starts_at_zero(self):
         write_tasks(self.root, [{"id": "t1", "status": "completed"}])
         marker = self.root / ".harness-reflect"
-        marker.write_text("invalid count", encoding="utf-8")
+        marker.write_text(json.dumps({"session_id": "test-reflect-001", "count": "invalid count"}), encoding="utf-8")
         code, stdout, stderr = run_hook(REFLECT_HOOK, self._payload())
         self.assertEqual((code, stderr), (0, ""))
         self.assertIn("1/5", json.loads(stdout)["reason"])
-        self.assertEqual(marker.read_text(encoding="utf-8"), "1")
+        self.assertEqual(json.loads(marker.read_text(encoding="utf-8"))["count"], 1)
 
     def test_new_completion_resets_unfinished_reflection(self):
         write_tasks(self.root, [{"id": "t1", "status": "completed"}])
@@ -875,7 +875,7 @@ class TestSelfReflectStopHook(unittest.TestCase):
         self._set_reflect()
         code, stdout, _ = run_hook(
             REFLECT_HOOK,
-            self._payload(session_id="test-reflect-disabled"),
+            self._payload(),
             env_extra={"REFLECT_MAX_ITERATIONS": "0"},
         )
         self.assertEqual(code, 0)
@@ -908,8 +908,8 @@ class TestSelfReflectStopHook(unittest.TestCase):
         """HARNESS_STATE_ROOT env var is used for root discovery."""
         write_tasks(self.root, [{"id": "t1", "status": "completed"}])
         deactivate(self.root)
-        self._set_reflect()
         sid = "test-reflect-env"
+        self._set_reflect(sid)
         code, stdout, _ = run_hook(
             REFLECT_HOOK,
             {"cwd": "/nonexistent", "session_id": sid},

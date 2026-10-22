@@ -29,6 +29,10 @@ sparv_state_validate_or_die
 # Arguments
 TOOL_NAME="${1:-unknown}"
 RESULT="${2:-no result}"
+if [ "${1:-}" = "--hook" ]; then
+    TOOL_NAME="$(python3 -c 'import json,sys; print(json.load(sys.stdin).get("tool_name", "unknown"))')"
+    RESULT="completed"
+fi
 
 ACTION_COUNT="$(sparv_yaml_get_int action_count 0)"
 

@@ -7,7 +7,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "[ -d .sparv/plan ] && ${SKILL_PATH}/scripts/save-progress.sh \"${TOOL_NAME:-unknown}\" \"completed\" 2>/dev/null || true"
+            "command": "if [ -d .sparv/plan ]; then bash \"${CLAUDE_PLUGIN_ROOT}/scripts/save-progress.sh\" --hook || true; fi"
           }
         ]
       }
@@ -18,7 +18,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "[ -d .sparv/plan ] && ${SKILL_PATH}/scripts/check-ehrb.sh --diff --dry-run 2>/dev/null || true"
+            "command": "if [ -d .sparv/plan ]; then bash \"${CLAUDE_PLUGIN_ROOT}/scripts/check-ehrb.sh\" --diff --dry-run || true; fi"
           }
         ]
       }
@@ -28,7 +28,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "[ -d .sparv/plan ] && ${SKILL_PATH}/scripts/reboot-test.sh --strict 2>/dev/null || true"
+            "command": "if [ -d .sparv/plan ]; then bash \"${CLAUDE_PLUGIN_ROOT}/scripts/reboot-test.sh\" --strict || exit 2; fi"
           }
         ]
       }

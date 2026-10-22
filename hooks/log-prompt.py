@@ -19,7 +19,7 @@ def get_session_id() -> str:
 
 def write_log(prompt: str) -> None:
     """Write prompt to session log file."""
-    log_dir = Path(".claude/state")
+    log_dir = Path.home() / ".claude" / "state"
     session_id = get_session_id()
     log_file = log_dir / f"session-{session_id}.log"
 
@@ -28,7 +28,10 @@ def write_log(prompt: str) -> None:
     timestamp = datetime.now().isoformat()
     entry = f"[{timestamp}] {prompt[:500]}\n"
 
-    with open(log_file, "a", encoding="utf-8") as f:
+    fd = os.open(log_file, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+    if os.name == "posix":
+        os.fchmod(fd, 0o600)
+    with os.fdopen(fd, "a", encoding="utf-8") as f:
         f.write(entry)
 
 

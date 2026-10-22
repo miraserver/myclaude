@@ -10,24 +10,36 @@ if (!url) {
   process.exit(1);
 }
 
-async function getTargets() {
+async function requestJson(path, method = 'GET') {
   return new Promise((resolve, reject) => {
-    http.get('http://localhost:9222/json', res => {
+    const req = http.request({ hostname: 'localhost', port: 9222, path, method }, res => {
       let data = '';
       res.on('data', chunk => data += chunk);
-      res.on('end', () => resolve(JSON.parse(data)));
-    }).on('error', reject);
+      res.on('end', () => {
+        if (res.statusCode === 405 && method === 'PUT') {
+          resolve(requestJson(path, 'GET'));
+          return;
+        }
+        if (res.statusCode < 200 || res.statusCode >= 300) {
+          reject(new Error(`Chrome ${method} ${path}: HTTP ${res.statusCode}: ${data.slice(0, 200)}`));
+          return;
+        }
+        try { resolve(JSON.parse(data)); }
+        catch { reject(new Error(`Chrome ${method} ${path}: non-JSON response: ${data.slice(0, 200)}`)); }
+      });
+      res.on('error', reject);
+    });
+    req.on('error', reject);
+    req.end();
   });
 }
 
+async function getTargets() {
+  return requestJson('/json');
+}
+
 async function createTab(url) {
-  return new Promise((resolve, reject) => {
-    http.get(`http://localhost:9222/json/new?${encodeURIComponent(url)}`, res => {
-      let data = '';
-      res.on('data', chunk => data += chunk);
-      res.on('end', () => resolve(JSON.parse(data)));
-    }).on('error', reject);
-  });
+  return requestJson(`/json/new?${encodeURIComponent(url)}`, 'PUT');
 }
 
 async function navigate(targetId, url) {

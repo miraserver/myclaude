@@ -64,14 +64,14 @@ def _find_harness_root(payload: dict[str, Any]) -> Optional[Path]:
 def _read_counter(marker: Path) -> int:
     """Read the iteration count for this harness completion."""
     try:
-        return int(marker.read_text("utf-8").strip())
+        return int(json.loads(marker.read_text("utf-8"))["count"])
     except Exception:
         return 0
 
 
-def _write_counter(marker: Path, count: int) -> None:
+def _write_counter(marker: Path, count: int, session_id: str) -> None:
     try:
-        marker.write_text(str(count), encoding="utf-8")
+        marker.write_text(json.dumps({"session_id": session_id, "count": count}), encoding="utf-8")
     except Exception:
         pass
 
@@ -146,6 +146,14 @@ def main() -> int:
     if not marker.is_file():
         return 0
 
+    try:
+        marker_session = json.loads(marker.read_text("utf-8")).get("session_id")
+    except (ValueError, AttributeError, OSError):
+        marker_session = None
+    if marker_session != session_id:
+        marker.unlink(missing_ok=True)
+        return 0
+
     # 读取最大迭代次数
     try:
         max_iter = int(os.environ.get("REFLECT_MAX_ITERATIONS", DEFAULT_MAX_ITERATIONS))
@@ -168,7 +176,7 @@ def main() -> int:
         return 0
 
     # 递增计数
-    _write_counter(marker, count + 1)
+    _write_counter(marker, count + 1, session_id)
 
     # 提取原始 prompt
     transcript_path = payload.get("transcript_path", "")

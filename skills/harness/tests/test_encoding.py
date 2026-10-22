@@ -52,8 +52,8 @@ def test_hook_utf8_payload_and_ascii_json(tmp_path, script, encoding, bom):
         json.dumps({"role": "user", "content": TITLE}, ensure_ascii=False) + "\n",
         encoding="utf-8",
     )
-    (root / ".harness-reflect").touch()
     session_id = "encoding-" + uuid.uuid4().hex
+    (root / ".harness-reflect").write_text(json.dumps({"session_id": session_id, "count": 0}), encoding="utf-8")
     payload = {
         "cwd": str(root), "title": TITLE, "task_id": TITLE,
         "transcript_path": str(transcript), "session_id": session_id,

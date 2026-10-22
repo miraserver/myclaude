@@ -257,9 +257,11 @@ def main() -> int:
     # If nothing left to do, allow stop
     if not pending_eligible and not retryable and not in_progress_blocking:
         _reset_block_counter(root)
+        if in_progress_any:
+            return 0  # Other workers still need the shared activation marker.
         # Signal self-reflect hook BEFORE removing active marker
         try:
-            (root / ".harness-reflect").write_text("", encoding="utf-8")
+            (root / ".harness-reflect").write_text(json.dumps({"session_id": payload.get("session_id", ""), "count": 0}), encoding="utf-8")
         except Exception:
             pass
         try:

@@ -132,7 +132,7 @@ def main() -> int:
         tasks = [t for t in tasks_raw if isinstance(t, dict)]
     except Exception as e:
         context = f"HARNESS: CONFIG error: cannot read {tasks_path.name}: {e}"
-        print(json.dumps({"hookSpecificOutput": {"additionalContext": context}}, ensure_ascii=True))
+        print(json.dumps({"hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext": context}}, ensure_ascii=True))
         return 0
 
     counts: dict[str, int] = {}
@@ -169,7 +169,7 @@ def main() -> int:
     if last_stats:
         summary += f"\nHARNESS: last_log={last_stats}"
 
-    print(json.dumps({"hookSpecificOutput": {"additionalContext": summary}}, ensure_ascii=True))
+    print(json.dumps({"hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext": summary}}, ensure_ascii=True))
     return 0
 
 

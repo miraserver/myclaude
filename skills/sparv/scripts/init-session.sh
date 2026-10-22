@@ -43,13 +43,10 @@ done
 
 # Find current active session
 find_active_session() {
-	if [ -d "$PLAN_DIR" ]; then
-		local session
-		session="$(ls -1 "$PLAN_DIR" 2>/dev/null | head -1)"
-		if [ -n "$session" ] && [ -f "$PLAN_DIR/$session/state.yaml" ]; then
-			echo "$session"
-		fi
-	fi
+    local session_dir
+    session_dir="$(sparv_find_active_session)"
+    [ -n "$session_dir" ] && basename "$session_dir"
+    return 0
 }
 
 # Archive a session to history

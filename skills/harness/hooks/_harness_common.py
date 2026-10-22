@@ -415,7 +415,7 @@ def emit_allow(reason: str = "") -> None:
 def emit_context(context: str) -> None:
     """Inject additional context via hookSpecificOutput."""
     print(json.dumps(
-        {"hookSpecificOutput": {"additionalContext": context}},
+        {"hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext": context}},
         ensure_ascii=True,
     ))
 

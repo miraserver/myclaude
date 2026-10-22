@@ -7,7 +7,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/pre-bash.py\" \"$CLAUDE_TOOL_INPUT\""
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/pre-bash.py\""
           },
           {
             "type": "command",

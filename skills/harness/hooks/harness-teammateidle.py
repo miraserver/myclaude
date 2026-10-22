@@ -7,6 +7,7 @@ Exit code 0 allows the teammate to go idle.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import sys
@@ -120,10 +121,32 @@ def main() -> int:
     # Check if this teammate owns any in-progress tasks
     worker_id = os.environ.get("HARNESS_WORKER_ID") or ""
     teammate_name = payload.get("teammate_name", "")
+    owner_ids = {str(v) for v in (worker_id, teammate_name) if v}
     owned = [
         t for t in in_progress
-        if str(t.get("claimed_by") or "") in (worker_id, teammate_name)
+        if str(t.get("claimed_by") or "") in owner_ids
     ] if (worker_id or teammate_name) else []
+
+    identity = str(teammate_name or worker_id or payload.get("session_id") or "anonymous")
+    counter = root / (".harness-idle-" + hashlib.sha256(identity.encode()).hexdigest()[:20] + ".json")
+    # Track this teammate's task transitions/checkpoints, not other workers' progress.
+    progress = json.dumps([
+        {key: value for key, value in t.items() if key not in ("lease_expires_at", "last_heartbeat")}
+        for t in tasks if str(t.get("claimed_by") or "") in owner_ids
+    ], sort_keys=True)
+    try:
+        previous = json.loads(counter.read_text("utf-8"))
+    except (OSError, ValueError):
+        previous = {}
+    blocks = previous.get("blocks", 0) if previous.get("progress") == progress else 0
+    if not (owned or pending or retryable):
+        counter.unlink(missing_ok=True)
+        return 0
+    if blocks >= 3:
+        return 0
+    tmp = counter.with_name(counter.name + f".tmp.{os.getpid()}")
+    tmp.write_text(json.dumps({"blocks": blocks + 1, "progress": progress}), encoding="utf-8")
+    os.replace(tmp, counter)
 
     if owned:
         tid = str(owned[0].get("id") or "")

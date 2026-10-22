@@ -35,11 +35,13 @@ Extract:
 
 ### Step 2: Fetch Skills List
 
+Resolve the selected branch/ref to a full immutable source commit SHA using the GitHub commits API. Use that SHA for the skills directory listing and every subsequent fetch.
+
 Use the WebFetch tool to retrieve the skills directory listing from GitHub.
 
 GitHub API endpoint pattern:
 ```
-https://api.github.com/repos/{owner}/{repo}/contents/skills?ref={branch}
+https://api.github.com/repos/{owner}/{repo}/contents/skills?ref={source_commit_sha}
 ```
 
 Parse the response to extract:
@@ -56,6 +58,8 @@ Present each skill with:
 - Skill name (directory name)
 - Brief description (if available from SKILL.md frontmatter)
 
+Resolve the selected branch/ref to an immutable full source commit SHA before fetching content. Use that SHA in every tree, contents, and raw-content request below; never fetch reviewed files from a moving branch.
+
 ### Step 4: Fetch Skill Content
 
 For each selected skill, fetch all files in the skill directory:
@@ -66,12 +70,12 @@ For each selected skill, fetch all files in the skill directory:
 
 Use WebFetch with GitHub API:
 ```
-https://api.github.com/repos/{owner}/{repo}/contents/skills/{skill_name}?ref={branch}
+https://api.github.com/repos/{owner}/{repo}/contents/skills/{skill_name}?ref={source_commit_sha}
 ```
 
 For each file, fetch the raw content:
 ```
-https://raw.githubusercontent.com/{owner}/{repo}/{branch}/skills/{skill_name}/{file_path}
+https://raw.githubusercontent.com/{owner}/{repo}/{source_commit_sha}/skills/{skill_name}/{file_path}
 ```
 
 ### Step 5: Security Scan
@@ -100,10 +104,10 @@ Output the security analysis with:
 Based on the security scan results:
 
 **If SAFE (APPROVE):**
-- Proceed directly to installation
+- Show the full file list, all scripts/hooks and their entry points, destination, repository URL, pinned commit SHA, and scan findings. Ask for explicit user confirmation to install this exact reviewed snapshot. A SAFE verdict is not authorization. Do not install until the user confirms.
 
 **If WARNING (APPROVE_WITH_WARNINGS):**
-- Display the security warnings to the user
+- Display the same complete file/script list, destination, pinned SHA and findings, including security warnings, to the user
 - Use AskUserQuestion to confirm: "Security warnings detected. Do you want to proceed with installation?"
 - Options: "Yes, install anyway" / "No, skip this skill"
 
@@ -115,12 +119,13 @@ Based on the security scan results:
 
 ### Step 7: Install Skills
 
-For approved skills, install to `~/.claude/skills/`:
+Only after explicit user confirmation of the pinned snapshot, install to `~/.claude/skills/`:
 
 1. Create the skill directory: `~/.claude/skills/{skill_name}/`
 2. Write all skill files maintaining the directory structure
 3. Ensure proper file permissions (executable for scripts)
 4. Verify SKILL.md exists and has valid frontmatter
+5. Record repository URL, full source commit SHA, skill path, and reviewed file list in `.source.json` inside the installed skill directory. Install only bytes from that SHA; if anything changes, scan again and request fresh confirmation.
 
 Use the Write tool to create files.
 
@@ -141,7 +146,7 @@ After installation, provide a summary:
 2. Presents available skills: "skill-a", "skill-b", "skill-c"
 3. User selects "skill-a" and "skill-b"
 4. Performs security scan on each skill
-5. skill-a: SAFE - proceeds to install
+5. skill-a: SAFE - shows files/scripts and pinned SHA, asks for explicit confirmation
 6. skill-b: WARNING (makes HTTP request) - asks user for confirmation
 7. Installs approved skills to ~/.claude/skills/
 8. Confirms: "Successfully installed: skill-a, skill-b"

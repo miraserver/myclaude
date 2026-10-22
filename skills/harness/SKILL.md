@@ -45,13 +45,13 @@ Free-text log of all agent actions across sessions. Never truncate.
 ```
 [2025-07-01T10:00:00Z] [SESSION-1] INIT Harness initialized for project /path/to/project
 [2025-07-01T10:00:05Z] [SESSION-1] INIT Environment health check: PASS
-[2025-07-01T10:00:10Z] [SESSION-1] LOCK acquired (pid=12345)
+[2025-07-01T10:00:10Z] [SESSION-1] LOCK acquired (owner=SESSION-1)
 [2025-07-01T10:00:11Z] [SESSION-1] Starting [task-001] Implement user authentication (base=def5678)
 [2025-07-01T10:05:00Z] [SESSION-1] CHECKPOINT [task-001] step=2/4 "auth routes created, tests pending"
 [2025-07-01T10:15:30Z] [SESSION-1] Completed [task-001] (commit abc1234)
 [2025-07-01T10:15:31Z] [SESSION-1] Starting [task-002] Add rate limiting (base=abc1234)
 [2025-07-01T10:20:00Z] [SESSION-1] ERROR [task-002] [TASK_EXEC] Redis connection refused
-[2025-07-01T10:20:01Z] [SESSION-1] ROLLBACK [task-002] git reset --hard abc1234
+[2025-07-01T10:20:01Z] [SESSION-1] ROLLBACK [task-002] revert verified task-only changes
 [2025-07-01T10:20:02Z] [SESSION-1] STATS tasks_total=5 completed=1 failed=1 pending=3 blocked=0 attempts_total=2 checkpoints=1
 ```
 
@@ -141,60 +141,59 @@ In concurrent mode (see Concurrency Control), tasks may also carry claim metadat
 
 ## Concurrency Control
 
-Before modifying `harness-tasks.json`, acquire an exclusive lock using portable `mkdir` (atomic on all POSIX systems, works on both macOS and Linux):
+Use a persistent lease for the agent cycle. Each Bash tool invocation is a new shell: never use its PID as the owner, and never release via an EXIT trap. Use the same nonempty `HARNESS_WORKER_ID` (or session id) in every call. The lease timeout is **900 seconds**; renew at every checkpoint and before long validation, at least every 300 seconds. A worker that misses renewal must STOP and reacquire before further writes.
 
-```bash
-# Acquire lock (fail fast if another agent is running)
-# Lock key must be stable even if invoked from a subdirectory.
-ROOT="$PWD"
-SEARCH="$PWD"
-while [ "$SEARCH" != "/" ] && [ ! -f "$SEARCH/harness-tasks.json" ]; do
-  SEARCH="$(dirname "$SEARCH")"
-done
-if [ -f "$SEARCH/harness-tasks.json" ]; then
-  ROOT="$SEARCH"
-fi
+Run this portable shell snippet in each call that acquires or renews the lease (Git Bash, Linux, macOS). Pin `HARNESS_STATE_ROOT` to the same absolute state directory in every call. The cycle lease is separate from the short-lived transaction locks used by hooks.
 
-PWD_HASH="$(
-  printf '%s' "$ROOT" |
-    (shasum -a 256 2>/dev/null || sha256sum 2>/dev/null) |
-    awk '{print $1}' |
-    cut -c1-16
-)"
-LOCKDIR="/tmp/harness-${PWD_HASH:-unknown}.lock"
-if ! mkdir "$LOCKDIR" 2>/dev/null; then
-  # Check if lock holder is still alive
-  LOCK_PID=$(cat "$LOCKDIR/pid" 2>/dev/null)
-  if [ -n "$LOCK_PID" ] && kill -0 "$LOCK_PID" 2>/dev/null; then
-    echo "ERROR: Another harness session is active (pid=$LOCK_PID)"; exit 1
+```sh
+ROOT="${HARNESS_STATE_ROOT:?Set absolute harness state root}"
+OWNER="${HARNESS_WORKER_ID:?Set stable session/worker id}"
+# In concurrent mode use a filesystem-safe worker id and set:
+# LOCKDIR="$ROOT/.harness-cycle.$OWNER.lock"
+LOCKDIR="$ROOT/.harness-cycle.lock"
+NOW=$(date +%s)
+LEASE_SECONDS=900
+if mkdir "$LOCKDIR" 2>/dev/null; then
+  printf '%s\n' "$OWNER" > "$LOCKDIR/owner"
+  printf '%s\n' "$NOW" > "$LOCKDIR/timestamp"
+else
+  HOLDER=$(cat "$LOCKDIR/owner" 2>/dev/null)
+  STAMP=$(cat "$LOCKDIR/timestamp" 2>/dev/null)
+  case "$STAMP" in ''|*[!0-9]*) echo 'ERROR: Incomplete lease; STOP for recovery'; exit 1 ;; esac
+  if [ "$((NOW - STAMP))" -ge "$LEASE_SECONDS" ]; then
+    echo 'ERROR: Lease expired; STOP for stale-lease recovery'; exit 1
   fi
-  # Stale lock — atomically reclaim via mv to avoid TOCTOU race
-  STALE="$LOCKDIR.stale.$$"
-  if mv "$LOCKDIR" "$STALE" 2>/dev/null; then
-    rm -rf "$STALE"
-    mkdir "$LOCKDIR" || { echo "ERROR: Lock contention"; exit 1; }
-    echo "WARN: Removed stale lock${LOCK_PID:+ from pid=$LOCK_PID}"
-  else
-    echo "ERROR: Another agent reclaimed the lock"; exit 1
+  if [ "$HOLDER" != "$OWNER" ]; then
+    echo "ERROR: Lease held by $HOLDER"; exit 1
   fi
+  printf '%s\n' "$NOW" > "$LOCKDIR/timestamp.next"
+  mv "$LOCKDIR/timestamp.next" "$LOCKDIR/timestamp"
 fi
-echo "$$" > "$LOCKDIR/pid"
-trap 'rm -rf "$LOCKDIR"' EXIT
 ```
 
-Log lock acquisition: `[timestamp] [SESSION-N] LOCK acquired (pid=<PID>)`
-Log lock release: `[timestamp] [SESSION-N] LOCK released`
+An expired lease is stale only after 900 seconds, never because a Bash PID died. Do not automatically delete or rename a stale lease while its old worker might still write. For recovery, quiesce the previous worker, re-read the owner and timestamp, then explicitly remove its two metadata files and `rmdir` the lease directory before retrying atomic `mkdir`. An incomplete lease requires the same recovery; absence of metadata alone is not proof of expiry. This conservative recovery avoids concurrent stale-lock reclaim races.
+
+Release explicitly at the end of the cycle, after checking ownership:
+
+```sh
+if [ "$(cat "$LOCKDIR/owner" 2>/dev/null)" = "$OWNER" ]; then
+  rm -f "$LOCKDIR/owner" "$LOCKDIR/timestamp"
+  rmdir "$LOCKDIR"
+fi
+```
+
+Log acquisition/renewal with owner and timestamp, and explicit release.
 
 Modes:
 
-- **Exclusive (default)**: hold the lock for the entire session (the `trap EXIT` handler releases it automatically). Any second session in the same state root fails fast.
-- **Concurrent (opt-in via `session_config.concurrency_mode: "concurrent"`)**: treat this as a **state transaction lock**. Hold it only while reading/modifying/writing `harness-tasks.json` (including `.bak`/`.tmp`) and appending to `harness-progress.txt`. Release it immediately before doing real work.
+- **Exclusive (default)**: hold the cycle lease for the session and explicitly release at every stopping condition.
+- **Concurrent**: use a separate cycle lease per worker (`.harness-cycle.<worker-id>.lock`, with a filesystem-safe worker id). Serialize shared state reads/claims/writes using the hooks' short-lived transaction lock; release that transaction lock before real work. Each task also has `claimed_by` and `lease_expires_at`, renewed on progress with the same 900-second timeout.
 
 Concurrent mode invariants:
 
 - All workers MUST point at the same state root (the directory that contains `harness-tasks.json`). If you are using separate worktrees/clones, pin it explicitly (e.g., `HARNESS_STATE_ROOT=/abs/path/to/state-root`).
 - Task selection is advisory; the real gate is **atomic claim** under the lock: set `status="in_progress"`, set `claimed_by` (stable worker id, e.g., `HARNESS_WORKER_ID`), set `lease_expires_at`. If claim fails (already `in_progress` with a valid lease), pick another eligible task and retry.
-- Never run two workers in the same git working directory. Use separate worktrees/clones. Otherwise rollback (`git reset --hard` / `git clean -fd`) will destroy other workers.
+- Never run two workers in the same git working directory. Use separate worktrees/clones. Task changes and rollback must stay isolated from other workers.
 
 ## Infinite Loop Protocol
 
@@ -225,21 +224,25 @@ Then pick the next task in this priority order:
 
 For each task, execute this exact sequence:
 
-1. **Claim** (atomic, under lock): Record `started_at_commit` = current HEAD hash. Set status to `in_progress`, set `claimed_by`, set `lease_expires_at`, log `Starting [<task-id>] <title> (base=<hash>)`. If the task is already claimed (`in_progress` with a valid lease), pick another eligible task and retry.
+1. **Claim** (atomic, under lock): FIRST require `git status --porcelain` to be empty (including untracked files). If nonempty, STOP and report the paths; do not claim, stash, clean, reset, or proceed. Keep harness state outside the task worktree or explicitly gitignore its metadata. Record the empty claim-time status and a task-owned path/commit manifest. Record `started_at_commit` = current HEAD hash. Set status to `in_progress`, set `claimed_by`, set `lease_expires_at`, log `Starting [<task-id>] <title> (base=<hash>)`. If the task is already claimed (`in_progress` with a valid lease), pick another eligible task and retry.
 2. **Execute with checkpoints**: Perform the work. After each significant step, log:
    ```
    [timestamp] [SESSION-N] CHECKPOINT [task-id] step=M/N "description of what was done"
    ```
-   Also append to the task's `checkpoints` array: `{ "step": M, "total": N, "description": "...", "timestamp": "ISO" }`. In concurrent mode, renew the lease at each checkpoint (push `lease_expires_at` forward).
+   Also append to the task's `checkpoints` array: `{ "step": M, "total": N, "description": "...", "timestamp": "ISO" }`. Renew the cycle lease and task lease at each checkpoint (push `lease_expires_at` forward by 900 seconds).
 3. **Validate**: Run the task's `validation.command` with a timeout wrapper (prefer `timeout`; on macOS use `gtimeout` from coreutils). If `validation.command` is empty/null, log `ERROR [<task-id>] [CONFIG] Missing validation.command` and STOP — do not declare completion without an objective check. Before running, verify the command exists (e.g., `command -v <binary>`) — if missing, treat as `ENV_SETUP` error.
    - Command exits 0 → PASS
    - Command exits non-zero → FAIL
    - Command exceeds timeout → TIMEOUT
 4. **Record outcome**:
    - **Success**: status=`completed`, set `completed_at`, log `Completed [<task-id>] (commit <hash>)`, git commit
-   - **Failure**: increment `attempts`, append error to `error_log`. Verify `started_at_commit` exists via `git cat-file -t <hash>` — if missing, mark failed at max_attempts. Otherwise execute `git reset --hard <started_at_commit>` and `git clean -fd` to rollback ALL commits and remove untracked files. Execute `on_failure.cleanup` if defined. Log `ERROR [<task-id>] [<category>] <message>`. Set status=`failed` (Task Selection Algorithm pass 2 handles retries when attempts < max_attempts)
+   - **Failure**: increment `attempts`, append error to `error_log`. Verify `started_at_commit` exists via `git cat-file -t <hash>` — if missing, mark failed at max_attempts. Otherwise use the task-only rollback policy below. Execute `on_failure.cleanup` if defined. Log `ERROR [<task-id>] [<category>] <message>`. Set status=`failed` (Task Selection Algorithm pass 2 handles retries when attempts < max_attempts)
 5. **Track**: Increment per-session task counter. If `max_tasks_per_session` reached, log STATS and STOP.
 6. **Continue**: Immediately pick next task (zero idle time)
+
+### Task-only rollback policy
+
+Never run a blanket hard reset or clean. Prefer `git revert <task-commit>` for commits verified to belong exclusively to this task. For uncommitted work, review the task path/patch manifest and reverse only task-owned hunks; remove only individually verified task-created files. Preserve all pre-claim modified/untracked paths and any later user or other-worker edits. A legacy/interrupted claim without evidence of a clean starting tree or clear ownership MUST STOP and report instead of automatic rollback. Conflicts or ambiguous ownership also require STOP. Apply this policy to failure, recovery, retries, and cleanup commands; review `on_failure.cleanup` for the same constraints.
 
 ### Stopping Conditions
 
@@ -269,9 +272,9 @@ When a new session starts and finds a task with `status: "in_progress"`:
 |---|---|---|---|
 | No | No | None | Mark `failed` with `[SESSION_TIMEOUT] No progress detected`, increment attempts |
 | No | No | Some | Verify file state matches checkpoint claims. If files reflect checkpoint progress, resume from last step. If not, mark `failed` — work was lost |
-| No | Yes | Any | Run `validation.command`. If passes → mark `completed`. If fails → `git reset --hard <started_at_commit>`, mark `failed` |
-| Yes | No | Any | Run validation WITH uncommitted changes present. If passes → commit, mark `completed`. If fails → `git reset --hard <started_at_commit>` + `git clean -fd`, mark `failed` |
-| Yes | Yes | Any | Commit uncommitted changes, run `validation.command`. If passes → mark `completed`. If fails → `git reset --hard <started_at_commit>` + `git clean -fd`, mark `failed` |
+| No | Yes | Any | Run `validation.command`. If passes → mark `completed`. If fails → task-only rollback, mark `failed` |
+| Yes | No | Any | Run validation WITH uncommitted changes present. If passes → commit, mark `completed`. If fails → task-only rollback, mark `failed` |
+| Yes | Yes | Any | Commit uncommitted changes, run `validation.command`. If passes → mark `completed`. If fails → task-only rollback, mark `failed` |
 
 4. **Log recovery**: `[timestamp] [SESSION-N] RECOVERY [task-id] action="<action taken>" reason="<reason>"`
 
@@ -283,8 +286,8 @@ Each error category has a default recovery strategy:
 |----------|-----------------|--------------|
 | `ENV_SETUP` | Re-run init, then STOP if still failing | Run `harness-init.sh` again immediately. If fails twice, log and stop — environment is broken |
 | `CONFIG` | STOP (requires human fix) | Log the config error precisely (file + field), then STOP. Do not guess or auto-mutate task metadata |
-| `TASK_EXEC` | Rollback via `git reset --hard <started_at_commit>`, retry | Verify `started_at_commit` exists (`git cat-file -t <hash>`). If missing, mark failed at max_attempts. Otherwise reset, run `on_failure.cleanup` if defined, retry if attempts < max_attempts |
-| `TEST_FAIL` | Rollback via `git reset --hard <started_at_commit>`, retry | Reset to `started_at_commit`, analyze test output to identify fix, retry with targeted changes |
+| `TASK_EXEC` | Rollback via task-only rollback, retry | Verify `started_at_commit` exists (`git cat-file -t <hash>`). If missing, mark failed at max_attempts. Otherwise revert only verified task changes, run `on_failure.cleanup` if defined, retry if attempts < max_attempts |
+| `TEST_FAIL` | Rollback via task-only rollback, retry | Revert only verified task changes, analyze test output to identify fix, retry with targeted changes |
 | `TIMEOUT` | Kill process, execute cleanup, retry | Wrap validation with `timeout <seconds> <command>`. On timeout, run `on_failure.cleanup`, retry (consider splitting task if repeated) |
 | `DEPENDENCY` | Skip task, mark blocked | Log which dependency failed, mark task as `failed` with dependency reason |
 | `SESSION_TIMEOUT` | Use Context Window Recovery Protocol | New session assesses partial progress via Recovery Protocol — may result in completion or failure depending on validation |
