@@ -40,7 +40,7 @@ def _wrapper_bin_path(install_dir: Path) -> Path:
 
 
 SETTINGS_FILE = "settings.json"
-WRAPPER_REQUIRED_MODULES = {"do", "omo"}
+WRAPPER_REQUIRED_MODULES = {"do", "omo", "course"}
 
 
 def _ensure_list(ctx: Dict[str, Any], key: str) -> List[Any]:
@@ -116,7 +116,15 @@ def _load_json(path: Path) -> Any:
 
 def _save_json(path: Path, data: Any) -> None:
     """Save data to JSON file with proper formatting."""
-    path.parent.mkdir(parents=True, exist_ok=True)
+    private = path.name == "models.json" and path.parent.name == ".codeagent"
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700 if private else 0o777)
+    if private and os.name != "nt":
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        os.chmod(path, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump(data, fh, indent=2, ensure_ascii=False)
+            fh.write("\n")
+        return
     with path.open("w", encoding="utf-8") as fh:
         json.dump(data, fh, indent=2, ensure_ascii=False)
         fh.write("\n")
@@ -226,11 +234,9 @@ def merge_hooks_to_settings(module_name: str, hooks_config: Dict[str, Any], ctx:
     """Replace owned hooks while preserving foreign hook values verbatim."""
     settings = load_settings(ctx)
     hooks = settings.setdefault("hooks", {})
-    roots = plugin_roots if plugin_roots is not None else [plugin_root]
     for hook_type, entries in list(hooks.items()):
         hooks[hook_type] = [entry for entry in entries if not (
-            entry.get("__module__") == module_name or
-            ("__module__" not in entry and any(_entry_points_into(entry, root) for root in roots)))]
+            entry.get("__module__") == module_name)]
     module_hooks = _replace_hook_variables(hooks_config.get("hooks", {}), plugin_root)
     for hook_type, entries in module_hooks.items():
         target = hooks.setdefault(hook_type, [])
@@ -243,6 +249,7 @@ def merge_hooks_to_settings(module_name: str, hooks_config: Dict[str, Any], ctx:
                     if "python_command" not in ctx:
                         ctx["python_command"] = resolve_python_command()
                     hook["command"] = re.sub(r"^python3(?=\s)", lambda _: ctx["python_command"], command)
+            target[:] = [old for old in target if old.get("__module__") is not None or not _hooks_equal(old, entry)]
             if entry not in target:
                 target.append(entry)
     settings["hooks"] = {key: entries for key, entries in hooks.items() if entries}
@@ -291,7 +298,7 @@ def merge_agents_to_models(module_name: str, agents: Dict[str, Any], ctx: Dict[s
     """Merge module agent configs into ~/.codeagent/models.json."""
     models_path = Path.home() / ".codeagent" / "models.json"
     _snapshot_path(models_path, ctx)
-    models_path.parent.mkdir(parents=True, exist_ok=True)
+    models_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
 
     if models_path.exists():
         models = _load_json(models_path)
@@ -322,8 +329,7 @@ def merge_agents_to_models(module_name: str, agents: Dict[str, Any], ctx: Dict[s
         if not isinstance(existing, dict) or "__module__" in existing:
             models["agents"][agent_name] = entry
 
-    with models_path.open("w", encoding="utf-8") as fh:
-        json.dump(models, fh, indent=2, ensure_ascii=False)
+    _save_json(models_path, models)
 
     write_log(
         {
@@ -385,8 +391,7 @@ def unmerge_agents_from_models(module_name: str, ctx: Dict[str, Any]) -> None:
                 agents[name] = restored
                 break
 
-    with models_path.open("w", encoding="utf-8") as fh:
-        json.dump(models, fh, indent=2, ensure_ascii=False)
+    _save_json(models_path, models)
 
     write_log(
         {
@@ -484,6 +489,7 @@ def resolve_paths(config: Dict[str, Any], args: argparse.Namespace) -> Dict[str,
         "status_file": install_dir / "installed_modules.json",
         "config_dir": config_dir,
         "force": bool(getattr(args, "force", False)),
+        "explicit_force": bool(getattr(args, "force", False)),
         "verbose": bool(getattr(args, "verbose", False)),
         "applied_paths": [],
         "status_backup": None,
@@ -537,7 +543,7 @@ def check_module_installed(name: str, cfg: Dict[str, Any], ctx: Dict[str, Any]) 
 
 
 def get_installed_modules(config: Dict[str, Any], ctx: Dict[str, Any]) -> Dict[str, bool]:
-    """Get installation status of all modules by checking files."""
+    """Get module ownership from the installation manifest only."""
     result = {}
     modules = config.get("modules", {})
 
@@ -546,10 +552,8 @@ def get_installed_modules(config: Dict[str, Any], ctx: Dict[str, Any]) -> Dict[s
     status_modules = status.get("modules", {})
 
     for name, cfg in modules.items():
-        # Check both status file and filesystem
         in_status = name in status_modules
-        files_exist = check_module_installed(name, cfg, ctx)
-        result[name] = in_status or files_exist
+        result[name] = in_status
 
     return result
 
@@ -671,6 +675,24 @@ def interactive_select_modules(config: Dict[str, Any]) -> Dict[str, Any]:
             continue
 
 
+def remove_matching_tree(source: Path, target: Path) -> None:
+    if not source.is_dir() or target.is_symlink():
+        return
+    for item in source.rglob("*"):
+        dest = target / item.relative_to(source)
+        if item.is_file() and dest.is_file() and not dest.is_symlink():
+            if item.read_bytes() == dest.read_bytes():
+                dest.unlink()
+            else:
+                print(f"Keeping {dest}: differs from the installed copy")
+    for directory in sorted(target.rglob("*"), key=lambda p: len(p.parts), reverse=True) + [target]:
+        if directory.is_dir() and not directory.is_symlink():
+            try:
+                directory.rmdir()
+            except OSError:
+                pass
+
+
 def uninstall_module(name: str, cfg: Dict[str, Any], ctx: Dict[str, Any]) -> Dict[str, Any]:
     """Uninstall a module by removing its files and hooks."""
     result: Dict[str, Any] = {
@@ -702,7 +724,7 @@ def uninstall_module(name: str, cfg: Dict[str, Any], ctx: Dict[str, Any]) -> Dic
                             write_log({"level": "INFO", "message": f"Keeping {target}: differs from the installed copy"}, ctx)
                             continue
                     if target.is_dir():
-                        shutil.rmtree(target)
+                        remove_matching_tree(_source_path(op, ctx), target)
                     else:
                         target.unlink()
                     removed_paths.append(str(target))
@@ -750,10 +772,11 @@ def uninstall_module(name: str, cfg: Dict[str, Any], ctx: Dict[str, Any]) -> Dic
                         continue
 
                     if target.exists():
-                        if target.is_dir():
-                            shutil.rmtree(target)
-                        else:
+                        source = _source_path(op, ctx) / rel_path
+                        if target.is_file() and source.is_file() and target.read_bytes() == source.read_bytes():
                             target.unlink()
+                        else:
+                            print(f"Keeping {target}: differs from the installed copy")
                         removed_paths.append(str(target))
                         write_log({"level": "INFO", "message": f"Removed: {target}"}, ctx)
 
@@ -960,6 +983,7 @@ def execute_module(name: str, cfg: Dict[str, Any], ctx: Dict[str, Any]) -> Dict[
 
     ctx.setdefault("transaction_results", []).append(result)
     previous = load_installed_status(ctx).get("modules", {}).get(name, {})
+    ctx["previously_owned"] = set(previous.get("merge_dir_files", []))
     result["merge_dir_files"] = [rel for rel in previous.get("merge_dir_files", [])
                                  if (ctx["install_dir"] / rel).is_file()]
 
@@ -1090,14 +1114,21 @@ def op_copy_dir(op: Dict[str, Any], ctx: Dict[str, Any]) -> None:
     src = _source_path(op, ctx)
     dst = _target_path(op, ctx)
 
-    existed_before = dst.exists()
-    if existed_before and not ctx.get("force", False):
-        write_log({"level": "INFO", "message": f"Skip existing dir: {dst}"}, ctx)
-        return
-
+    if not src.is_dir():
+        raise NotADirectoryError(f"Source directory not found: {src}")
     _snapshot_path(dst, ctx)
-    dst.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copytree(src, dst, dirs_exist_ok=True)
+    existed_before = dst.exists()
+    dst.mkdir(parents=True, exist_ok=True)
+    for source in src.rglob("*"):
+        target = dst / source.relative_to(src)
+        if source.is_dir():
+            target.mkdir(parents=True, exist_ok=True)
+        elif not target.exists() or ctx.get("force", False):
+            target.parent.mkdir(parents=True, exist_ok=True)
+            _snapshot_path(target, ctx)
+            shutil.copy2(source, target)
+            if ctx["snapshots"][target.resolve()] is None:
+                _record_created(target, ctx)
     if not existed_before:
         _record_created(dst, ctx)
     write_log({"level": "INFO", "message": f"Copied dir {src} -> {dst}"}, ctx)
@@ -1120,7 +1151,9 @@ def op_merge_dir(op: Dict[str, Any], ctx: Dict[str, Any]) -> List[str]:
         for f in subdir.iterdir():
             if f.is_file():
                 dst = target_subdir / f.name
-                if dst.exists() and not force:
+                rel = f"{subdir.name}/{f.name}"
+                explicit_force = ctx.get("explicit_force", force)
+                if dst.exists() and (not force or (not explicit_force and rel not in ctx.get("previously_owned", set()))):
                     continue
                 _snapshot_path(dst, ctx)
                 shutil.copy2(f, dst)
@@ -1406,7 +1439,7 @@ def print_post_install_info(ctx: Dict[str, Any]) -> None:
     cli_parts = [f"{b} {'✓' if detected[b] else '✗'}" for b in backends]
     print("  " + "  |  ".join(cli_parts))
     print("\nNext steps:")
-    print("  1. Configure API keys in ~/.codeagent/models.json")
+    print("  1. Log in to each backend CLI you use (codex login / claude / gemini), or remap agents in ~/.codeagent/models.json; api_key there is optional.")
     print('  2. Try: /do "your first task"')
     print()
 

@@ -38,10 +38,33 @@ fi
 
 echo "Downloading codeagent-wrapper from ${URL}..."
 DOWNLOAD_FILE=$(mktemp)
-trap 'rm -f "$DOWNLOAD_FILE"' EXIT
+CHECKSUM_FILE=$(mktemp)
+trap 'rm -f "$DOWNLOAD_FILE" "$CHECKSUM_FILE"' EXIT
 if ! curl -fsSL "$URL" -o "$DOWNLOAD_FILE"; then
     echo "ERROR: failed to download binary" >&2
     exit 1
+fi
+
+# A missing manifest is supported for releases published before SHA256SUMS.
+CHECKSUM_STATUS=$(curl -sSL -w '%{http_code}' "${URL%/*}/SHA256SUMS" -o "$CHECKSUM_FILE") || {
+    echo "ERROR: failed to download SHA256SUMS" >&2; exit 1;
+}
+if [ "$CHECKSUM_STATUS" = "404" ]; then
+    echo "WARNING: SHA256SUMS absent; continuing without checksum verification." >&2
+elif [ "$CHECKSUM_STATUS" != "200" ]; then
+    echo "ERROR: SHA256SUMS download returned HTTP $CHECKSUM_STATUS" >&2; exit 1
+else
+    EXPECTED=$(awk -v asset="$BINARY_NAME" '$2 == asset {print $1}' "$CHECKSUM_FILE")
+    if command -v sha256sum >/dev/null 2>&1; then
+        ACTUAL=$(sha256sum "$DOWNLOAD_FILE" | awk '{print $1}')
+    elif command -v shasum >/dev/null 2>&1; then
+        ACTUAL=$(shasum -a 256 "$DOWNLOAD_FILE" | awk '{print $1}')
+    else
+        echo "ERROR: sha256sum or shasum is required for verification" >&2; exit 1
+    fi
+    if [[ ! "$EXPECTED" =~ ^[[:xdigit:]]{64}$ ]] || [ "$(echo "$EXPECTED" | tr 'A-F' 'a-f')" != "$ACTUAL" ]; then
+        echo "ERROR: SHA256 checksum mismatch for $BINARY_NAME" >&2; exit 1
+    fi
 fi
 
 INSTALL_DIR="${INSTALL_DIR:-$HOME/.claude}"

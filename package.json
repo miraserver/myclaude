@@ -2,6 +2,9 @@
   "name": "myclaude",
   "version": "6.9.4",
   "private": true,
+  "scripts": {
+    "test": "node --test tests/cli.test.js"
+  },
   "description": "Claude Code multi-agent workflows (npx installer)",
   "license": "AGPL-3.0",
   "bin": {

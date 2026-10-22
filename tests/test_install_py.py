@@ -159,6 +159,35 @@ class InstallerJsonTests(unittest.TestCase):
                 else:
                     self.assertFalse(target.exists())
 
+    def test_update_overwrites_copy_targets_but_preserves_unowned_merge_files(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "source"
+            (source / "merge" / "commands").mkdir(parents=True)
+            (source / "skill").mkdir()
+            (source / "skill" / "SKILL.md").write_text("NEW", encoding="utf-8")
+            (source / "merge" / "commands" / "owned.md").write_text("NEW OWNED", encoding="utf-8")
+            (source / "merge" / "commands" / "foreign.md").write_text("MODULE FOREIGN", encoding="utf-8")
+            install = root / "install"
+            (install / "skills/demo").mkdir(parents=True)
+            (install / "skills/demo/SKILL.md").write_text("OLD", encoding="utf-8")
+            (install / "commands").mkdir()
+            (install / "commands/owned.md").write_text("OLD OWNED", encoding="utf-8")
+            (install / "commands/foreign.md").write_text("USER", encoding="utf-8")
+            ctx = {**self.ctx, "install_dir": install, "config_dir": source,
+                   "status_file": install / "installed_modules.json", "force": True, "explicit_force": False}
+            ctx["status_file"].write_text(json.dumps({"modules": {"demo": {
+                "status": "success", "merge_dir_files": ["commands/owned.md"]}}}), encoding="utf-8")
+            module = {"operations": [
+                {"type": "copy_dir", "source": "skill", "target": "skills/demo"},
+                {"type": "merge_dir", "source": "merge"},
+            ]}
+            result = installer.execute_module("demo", module, ctx)
+            self.assertEqual(result["status"], "success")
+            self.assertEqual((install / "skills/demo/SKILL.md").read_text(), "NEW")
+            self.assertEqual((install / "commands/owned.md").read_text(), "NEW OWNED")
+            self.assertEqual((install / "commands/foreign.md").read_text(), "USER")
+
     def test_bom_settings_load_and_hook_merge_preserve_user_keys(self):
         path = self.root / "settings.json"
         original = {"env": {"USER_OPTION": "keep"}, "permissions": {"allow": ["Read"]}}
@@ -516,7 +545,7 @@ class InstallerRequirementsTests(unittest.TestCase):
                 self.assertFalse((self.root / "hooks/first").exists())
                 self.assertEqual(self.read_json(self.ctx["status_file"])["modules"], previous["modules"])
 
-    def test_i2_replaces_legacy_untagged_hooks_only_inside_module_root(self):
+    def test_i2_preserves_untagged_hooks_inside_module_root(self):
         root = (self.root / "skills/demo").as_posix()
         foreign = self.foreign_hooks()
         self.save(self.root / "settings.json", {"hooks": {"Stop": foreign + [
@@ -524,7 +553,7 @@ class InstallerRequirementsTests(unittest.TestCase):
         installer.merge_hooks_to_settings("demo", self.hooks, self.ctx, plugin_roots=[root])
         actual = self.read_json(self.root / "settings.json")["hooks"]["Stop"]
         self.assertEqual(actual[:3], foreign)
-        self.assertEqual(len(actual), 4)
+        self.assertEqual(len(actual), 5)
         self.assertEqual(actual[-1]["hooks"][0]["command"], "echo ok")
 
 
@@ -577,3 +606,52 @@ class FollowupRequirementsTests(unittest.TestCase):
             for entry in entries:
                 for hook in entry["hooks"]:
                     self.assertTrue(hook["command"].startswith("py -3 "))
+
+
+class OwnershipRegressionTests(unittest.TestCase):
+    setUp = InstallerJsonTests.setUp
+    save = InstallerRequirementsTests.save
+    def test_existing_copy_dir_fills_missing_and_preserves_modified(self):
+        source = self.root / "source"
+        target = self.root / "hooks"
+        source.mkdir(); target.mkdir()
+        (source / "new.py").write_bytes(b"new")
+        (source / "edited.py").write_bytes(b"original")
+        (target / "edited.py").write_bytes(b"user")
+        module = {"operations": [{"type": "copy_dir", "source": "source", "target": "hooks"}]}
+        installer.execute_module("demo", module, self.ctx)
+        self.assertEqual((target / "new.py").read_bytes(), b"new")
+        self.assertEqual((target / "edited.py").read_bytes(), b"user")
+        installer.uninstall_module("demo", module, self.ctx)
+        self.assertFalse((target / "new.py").exists())
+        self.assertEqual((target / "edited.py").read_bytes(), b"user")
+
+    def test_update_only_overwrites_recorded_merge_files(self):
+        source = self.root / "source/agents"
+        source.mkdir(parents=True)
+        target = self.root / "agents"
+        target.mkdir()
+        for name in ("owned", "user"):
+            (source / (name + ".md")).write_text("new")
+            (target / (name + ".md")).write_text("old")
+        self.save(self.ctx["status_file"], {"modules": {"demo": {"status": "success", "merge_dir_files": ["agents/owned.md"]}}})
+        self.ctx.update(force=True, explicit_force=False)
+        module = {"operations": [{"type": "merge_dir", "source": "source"}]}
+        result = installer.execute_module("demo", module, self.ctx)
+        self.assertEqual((target / "owned.md").read_text(), "new")
+        self.assertEqual((target / "user.md").read_text(), "old")
+        self.assertEqual(result["merge_dir_files"], ["agents/owned.md"])
+
+    def test_menu_status_does_not_infer_ownership_from_shared_directory(self):
+        (self.root / "hooks").mkdir()
+        modules = {"demo": {"operations": [{"type": "copy_dir", "target": "hooks"}]}}
+        self.assertFalse(installer.get_installed_modules({"modules": modules}, self.ctx)["demo"])
+
+    @unittest.skipIf(os.name == "nt", "POSIX permissions")
+    def test_models_secrets_permissions(self):
+        installer.merge_agents_to_models("demo", {"agent": {"model": "m"}}, self.ctx)
+        self.assertEqual(self.models.stat().st_mode & 0o777, 0o600)
+        self.assertEqual(self.models.parent.stat().st_mode & 0o777, 0o700)
+        self.models.chmod(0o644)
+        installer.unmerge_agents_from_models("demo", self.ctx)
+        self.assertEqual(self.models.stat().st_mode & 0o777, 0o600)

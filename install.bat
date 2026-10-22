@@ -33,14 +33,27 @@ if not exist "%TEMP_FILE%" (
     goto :fail
 )
 
+call :verify_checksum
+if errorlevel 1 goto :fail
+
 echo Installing to "%DEST%" ...
 if not exist "%DEST_DIR%" (
     mkdir "%DEST_DIR%" >nul 2>nul || goto :fail
 )
 
+rem A running executable can be renamed on Windows, but cannot be overwritten.
+if exist "%DEST%.old" del /f /q "%DEST%.old" >nul 2>nul
+if exist "%DEST%" (
+    move /y "%DEST%" "%DEST%.old" >nul 2>nul
+    if errorlevel 1 (
+        echo ERROR: Close codeagent-wrapper.exe and retry; unable to rename "%DEST%".
+        goto :fail
+    )
+)
 move /y "%TEMP_FILE%" "%DEST%" >nul 2>nul
 if errorlevel 1 (
-    echo ERROR: unable to place file in "%DEST%".
+    echo ERROR: unable to place file in "%DEST%". Close codeagent-wrapper.exe and retry.
+    if exist "%DEST%.old" move /y "%DEST%.old" "%DEST%" >nul 2>nul
     goto :fail
 )
 
@@ -148,6 +161,11 @@ if "!PATH_UPDATED!"=="1" echo Open a new terminal for the PATH change to take ef
 
 goto :cleanup
 
+:verify_checksum
+rem Use environment values instead of interpolating paths into PowerShell code.
+powershell -NoLogo -NoProfile -Command "$ErrorActionPreference='Stop'; $url=$env:URL.Substring(0,$env:URL.LastIndexOf('/'))+'/SHA256SUMS'; try { $manifest=(Invoke-WebRequest -UseBasicParsing -Uri $url).Content } catch { if ($_.Exception.Response -and [int]$_.Exception.Response.StatusCode -eq 404) { Write-Warning 'SHA256SUMS absent; continuing without checksum verification.'; exit 0 }; Write-Error $_; exit 1 }; $expected=$null; foreach ($line in ($manifest -split '[\r\n]+')) { if ($line -match '^([a-fA-F0-9]{64})  (.+)$' -and $Matches[2] -ceq $env:BINARY_NAME) { $expected=$Matches[1] } }; if (Get-Command Get-FileHash -ErrorAction SilentlyContinue) { $actual=(Get-FileHash -LiteralPath $env:TEMP_FILE -Algorithm SHA256).Hash } else { $actual=(& certutil -hashfile $env:TEMP_FILE SHA256 | ForEach-Object { $_ -replace ' ', '' } | Where-Object { $_ -match '^[a-fA-F0-9]{64}$' }); if ($LASTEXITCODE -ne 0) { throw 'certutil SHA256 verification failed' } }; if (!$expected -or $actual -ine $expected) { Write-Error ('SHA256 checksum mismatch for '+$env:BINARY_NAME); exit 1 }"
+exit /b %errorlevel%
+
 :detect_arch
 set "ARCH=%PROCESSOR_ARCHITECTURE%"
 if defined PROCESSOR_ARCHITEW6432 set "ARCH=%PROCESSOR_ARCHITEW6432%"
@@ -200,5 +218,6 @@ goto :cleanup
 
 :cleanup
 if exist "%TEMP_FILE%" del /f /q "%TEMP_FILE%" >nul 2>nul
+if exist "%DEST%.old" del /f /q "%DEST%.old" >nul 2>nul
 set "CODE=%EXIT_CODE%"
 endlocal & exit /b %CODE%

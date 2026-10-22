@@ -216,3 +216,47 @@ class SharedAgentUninstallTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class UninstallerOwnershipTests(unittest.TestCase):
+    def test_merge_uninstall_keeps_foreign_and_modified_files_with_or_without_manifest(self):
+        for recorded in (True, False):
+            with self.subTest(recorded=recorded), tempfile.TemporaryDirectory() as temp:
+                root = Path(temp)
+                source = root / "source/agents"
+                source.mkdir(parents=True)
+                install = root / "install"
+                target = install / "agents"
+                target.mkdir(parents=True)
+                for name in ("owned", "edited"):
+                    (source / (name + ".md")).write_text("source")
+                    (target / (name + ".md")).write_text("source" if name == "owned" else "user")
+                (target / "foreign.md").write_text("foreign")
+                info = {"status": "success"}
+                if recorded:
+                    info["merge_dir_files"] = ["agents/owned.md", "agents/edited.md"]
+                (install / "installed_modules.json").write_text(json.dumps({"modules": {"demo": info}}))
+                config = {"modules": {"demo": {"operations": [{"type": "merge_dir", "source": "source"}]}}}
+                with mock.patch.dict("os.environ", {"HOME": str(root), "USERPROFILE": str(root)}), mock.patch.object(uninstaller.Path, "home", return_value=root), mock.patch.object(uninstaller, "__file__", str(root / "uninstall.py")), mock.patch.object(uninstaller, "load_config", return_value=config):
+                    self.assertEqual(uninstaller.main(["--install-dir", str(install), "--yes"]), 0)
+                self.assertFalse((target / "owned.md").exists())
+                self.assertEqual((target / "edited.md").read_text(), "user")
+                self.assertEqual((target / "foreign.md").read_text(), "foreign")
+
+    def test_implicit_wrapper_dependencies_preserve_wrapper_and_shell_path(self):
+        for dependency in ("do", "omo", "course"):
+            with self.subTest(dependency=dependency), tempfile.TemporaryDirectory() as temp:
+                root = Path(temp)
+                install = root / "install"
+                wrapper = install / "bin/codeagent-wrapper"
+                wrapper.parent.mkdir(parents=True)
+                wrapper.write_text("wrapper")
+                rc = root / ".bashrc"
+                rc.write_text(f'# Added by myclaude installer\nexport PATH="{install / "bin"}:$PATH"\n')
+                original = rc.read_bytes()
+                (install / "installed_modules.json").write_text(json.dumps({"modules": {"wrapper": {}, dependency: {}}}))
+                config = {"modules": {"wrapper": {"operations": [{"type": "run_command", "command": "bash install.sh"}]}, dependency: {"operations": []}}}
+                with mock.patch.dict("os.environ", {"HOME": str(root), "USERPROFILE": str(root)}), mock.patch.object(uninstaller.Path, "home", return_value=root), mock.patch.object(uninstaller.sys, "platform", "linux"), mock.patch.object(uninstaller, "load_config", return_value=config):
+                    self.assertEqual(uninstaller.main(["--install-dir", str(install), "--module", "wrapper", "--yes"]), 0)
+                self.assertTrue(wrapper.exists())
+                self.assertEqual(rc.read_bytes(), original)

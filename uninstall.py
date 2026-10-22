@@ -161,14 +161,6 @@ def get_module_files(module_name: str, config: Dict[str, Any]) -> Set[str]:
             files.add(target)
         elif op_type == "copy_dir" and target:
             files.add(target)
-        elif op_type == "merge_dir":
-            # merge_dir merges subdirs like commands/, agents/ into install_dir
-            source = op.get("source", "")
-            source_path = Path(__file__).parent / source
-            if source_path.exists():
-                for subdir in source_path.iterdir():
-                    if subdir.is_dir():
-                        files.add(subdir.name)
         elif _installs_wrapper(op):
             # install.sh installs bin/codeagent-wrapper
             files.add("bin/codeagent-wrapper")
@@ -262,11 +254,32 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     wrapper_required_by = sorted(
         name for name in installed_modules
-        if name not in selected and any(
+        if name not in selected and (name in {"do", "omo", "course"} or any(
             _installs_wrapper(op)
             for op in config.get("modules", {}).get(name, {}).get("operations", [])
-        )
+        ))
     ) if args.module and not args.purge else []
+    sources = {}
+    repo = Path(__file__).parent
+    for name in selected:
+        for op in config.get("modules", {}).get(name, {}).get("operations", []):
+            source = repo / op.get("source", "")
+            if op.get("type") == "merge_dir":
+                recorded = installed_modules[name].get("merge_dir_files")
+                candidates = recorded if isinstance(recorded, list) else [str(f.relative_to(source)) for f in source.rglob("*") if f.is_file()]
+                for rel in candidates:
+                    rel = Path(rel)
+                    if rel.is_absolute() or ".." in rel.parts:
+                        continue
+                    files_to_remove.add(str(rel))
+                    sources[str(rel)] = source / rel
+            elif op.get("type") == "copy_dir":
+                files_to_remove.discard(op.get("target"))
+                for f in source.rglob("*"):
+                    if f.is_file():
+                        rel = str(Path(op["target"]) / f.relative_to(source))
+                        files_to_remove.add(rel)
+                        sources[rel] = f
     # Handle both manifest entries through the platform-specific helper only.
     files_to_remove.discard("bin/codeagent-wrapper")
 
@@ -336,6 +349,9 @@ def main(argv: Optional[List[str]] = None) -> int:
             if not path.exists():
                 continue
             try:
+                if item in sources and (path.is_symlink() or not sources[item].is_file() or not path.is_file() or path.read_bytes() != sources[item].read_bytes()):
+                    print(f"Keeping {path}: differs from the installed copy")
+                    continue
                 keep = False
                 for source in copy_file_sources.get(item, []):
                     try:
@@ -349,13 +365,20 @@ def main(argv: Optional[List[str]] = None) -> int:
                     print(f"Keeping {path}: differs from the installed copy")
                     continue
                 if path.is_dir():
-                    shutil.rmtree(path)
+                    path.rmdir()
                     print(f"  ✓ Removed {item}/")
                     removed.append(item)
                 else:
                     path.unlink()
                     print(f"  ✓ Removed {item}")
                     removed.append(item)
+                    parent = path.parent
+                    while parent != install_dir and install_dir in parent.parents:
+                        try:
+                            parent.rmdir()
+                        except OSError:
+                            break
+                        parent = parent.parent
             except OSError as e:
                 print(f"  ✗ Failed to remove {item}: {e}", file=sys.stderr)
 

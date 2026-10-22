@@ -8,6 +8,24 @@ const path = require("node:path");
 const { test } = require("node:test");
 const { spawnSync } = require("node:child_process");
 const vm = require("node:vm");
+
+// Keep every in-process and spawned installer test away from the developer's home.
+const originalEnv = { ...process.env };
+const originalHome = process.platform === "win32"
+  ? (originalEnv.USERPROFILE || originalEnv.HOME || os.homedir())
+  : (originalEnv.HOME || os.homedir());
+const originalModelsPath = path.join(originalHome, ".codeagent", "models.json");
+const originalModelsSnapshot = fs.existsSync(originalModelsPath)
+  ? { hash: crypto.createHash("sha256").update(fs.readFileSync(originalModelsPath)).digest("hex"), mtimeMs: fs.statSync(originalModelsPath).mtimeMs }
+  : null;
+const isolatedHome = fs.mkdtempSync(path.join(os.tmpdir(), "myclaude-test-home-"));
+process.env.HOME = isolatedHome;
+process.env.USERPROFILE = isolatedHome;
+delete process.env.HOMEDRIVE;
+delete process.env.HOMEPATH;
+process.on("exit", () => {
+  try { fs.rmSync(isolatedHome, { recursive: true, force: true }); } catch {}
+});
 const {
   installDefaultConfigs,
   applyModule,
@@ -62,7 +80,7 @@ test("install.sh maps MSYS family platforms to Windows release assets without do
   const curl = path.join(root, "curl");
   const urlFile = path.join(root, "url");
   fs.writeFileSync(uname, "#!/bin/sh\ncase \"$1\" in -s) echo MINGW64_NT-10.0;; -m) echo x86_64;; esac\n");
-  fs.writeFileSync(curl, `#!/bin/sh\nprintf '%s' "$2" > "${urlFile.replace(/\\/g, "/")}"\nprintf '#!/bin/sh\\nexit 0\\n' > "$4"\n`);
+  fs.writeFileSync(curl, `#!/bin/sh\ncase "$*" in *SHA256SUMS*) printf 404; exit 0;; esac\nprintf '%s' "$2" > "${urlFile.replace(/\\/g, "/")}"\nprintf '#!/bin/sh\\nexit 0\\n' > "$4"\n`);
   fs.chmodSync(uname, 0o755);
   fs.chmodSync(curl, 0o755);
   const result = spawnSync("bash", [path.resolve(__dirname, "../install.sh")], {
@@ -490,7 +508,7 @@ test("re-merge removes obsolete owned hook types", (t) => {
   assert.deepEqual(f.read().hooks, {});
 });
 
-test("unmarked orphan is replaced by exactly one marked Stop entry", (t) => {
+test("exact untagged duplicate is replaced by one owned hook", (t) => {
   const f = fixture(t);
   fs.writeFileSync(f.settingsPath, JSON.stringify({
     hooks: { Stop: [commandEntry('python3 "' + f.root + '/hooks/stop-hook.py"')] },
@@ -500,7 +518,7 @@ test("unmarked orphan is replaced by exactly one marked Stop entry", (t) => {
   assert.equal(f.read().hooks.Stop[0].__module__, "do");
 });
 
-test("orphans with backslashes, different quoting and interpreters are recognized", (t) => {
+test("untagged hooks with different quoting and interpreters are preserved", (t) => {
   const f = fixture(t);
   fs.writeFileSync(f.settingsPath, JSON.stringify({
     hooks: {
@@ -512,9 +530,9 @@ test("orphans with backslashes, different quoting and interpreters are recognize
     },
   }));
   mergeHooksToSettings("do", doHooks, f.installDir, f.root);
-  assert.equal(f.read().hooks.Stop.length, 1);
-  assert.equal(f.read().hooks.Stop[0].__module__, "do");
-  assert.equal(f.read().hooks.SubagentStop, undefined);
+  assert.equal(f.read().hooks.Stop.length, 2);
+  assert.equal(f.read().hooks.Stop.every((entry) => !entry.__module__), true);
+  assert.equal(f.read().hooks.SubagentStop.length, 1);
 });
 
 test("foreign hooks remain untouched and retain their order", (t) => {
@@ -564,9 +582,9 @@ test("unmerge removes owned hooks and orphans in all supplied roots, retaining f
   }));
   assert.equal(unmergeHooksFromSettings("do", f.installDir, [f.root, secondRoot]), true);
   assert.deepEqual(f.read().hooks.Stop, [
-    ...foreign, other, commandEntry('python3 "' + f.root + '-other/keep.py"'),
+    foreign[0], commandEntry("python '" + f.root.replace(/\//g, "\\") + "\\hooks\\stop-hook.py'"), foreign[1], other, commandEntry('python3 "' + f.root + '-other/keep.py"'),
   ]);
-  assert.equal(f.read().hooks.PreToolUse, undefined);
+  assert.equal(f.read().hooks.PreToolUse.length, 1);
   assert.equal(unmergeHooksFromSettings("do", f.installDir, [f.root, secondRoot]), false);
 });
 
@@ -741,10 +759,10 @@ test("uninstall skill dir removes files, empty dirs, and hooks", async (t) => {
     { type: "copy_dir", source: "skill", target: "skills/skill" },
   ] } } }, repoRoot, f.installDir, false);
   assert.equal(fs.existsSync(target), false);
-  assert.deepEqual(f.read().hooks, {});
+  assert.equal(f.read().hooks.Stop.length, 1);
 });
 
-test("uninstall missing copy_dir source removes whole target and dry-run changes nothing", async (t) => {
+test("uninstall missing copy_dir source preserves target and dry-run changes nothing", async (t) => {
   const f = fixture(t);
   const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "myclaude-repo-"));
   t.after(() => fs.rmSync(repoRoot, { recursive: true, force: true }));
@@ -757,7 +775,7 @@ test("uninstall missing copy_dir source removes whole target and dry-run changes
   await uninstallModule("missing", config, repoRoot, f.installDir, true);
   assert.equal(fs.existsSync(target), true);
   await uninstallModule("missing", config, repoRoot, f.installDir, false);
-  assert.equal(fs.existsSync(target), false);
+  assert.equal(fs.existsSync(target), true);
 });
 
 test("offline listing makes no HTTPS requests", (t) => {
@@ -1001,7 +1019,8 @@ test("reinstall without force retains existing ownership including retired sourc
   upsertModuleStatus(f.installDir, result);
   assert.equal(fs.readFileSync(path.join(commands, "review.md"), "utf8"), "original");
   await uninstallModule("test", config, repoRoot, f.installDir, false);
-  assert.equal(fs.existsSync(commands), false);
+  assert.equal(fs.readFileSync(path.join(commands, "review.md"), "utf8"), "original");
+  assert.equal(fs.existsSync(path.join(commands, "retired.md")), true);
 });
 
 test("identical unowned merge files become owned on update", (t) => {
@@ -1136,7 +1155,7 @@ for (const file of ["installed_modules.json", "settings.json", "models.json"]) {
     const config = { modules: { test: { operations: [{ type: "copy_file", source: "source.txt", target: "module.txt" }] } } };
     await assert.rejects(applyModule("test", config, f.installDir, f.installDir, false), invalidJsonError(corruptPath, "{invalid"));
     assert.equal(fs.existsSync(target), false);
-    for (const args of [[], ["--update"], ["uninstall", "--module", "essentials", "--yes"]]) {
+    for (const args of (file === "models.json" ? [[], ["--update"]] : [[], ["--update"], ["uninstall", "--module", "essentials", "--yes"]])) {
       const result = spawnSync(process.execPath, [cliPath, ...args, "--offline", "--skip-wrapper",
         "--install-dir", f.installDir], { encoding: "utf8", timeout: 10000 });
       assert.equal(result.status, 1, result.stderr);
@@ -1146,7 +1165,8 @@ for (const file of ["installed_modules.json", "settings.json", "models.json"]) {
       assert.equal(fs.readFileSync(corruptPath, "utf8"), "{invalid");
     }
     fs.writeFileSync(target, "installed module");
-    await assert.rejects(uninstallModule("test", config, f.installDir, f.installDir, false), invalidJsonError(corruptPath, "{invalid"));
+    if (file === "models.json") await uninstallModule("test", config, f.installDir, f.installDir, false);
+    else await assert.rejects(uninstallModule("test", config, f.installDir, f.installDir, false), invalidJsonError(corruptPath, "{invalid"));
     assert.equal(fs.readFileSync(target, "utf8"), "installed module");
   });
 }
@@ -1276,4 +1296,191 @@ test("explicit update never installs absent or failed modules, even with force",
     assert.equal(fs.existsSync(path.join(f.installDir, "skills", name)), false);
   }
   assert.deepEqual(fs.readFileSync(path.join(f.installDir, "installed_modules.json")), before);
+});
+
+for (const checksum of ["valid", "mismatch", "missing", "unlisted"]) {
+  test(`install.sh verifies release manifest: ${checksum}`, (t) => {
+    const f = fixture(t);
+    const toolsDir = path.join(f.installDir, "tools");
+    fs.mkdirSync(toolsDir);
+    const binary = "#!/bin/sh\nexit 0\n";
+    const hash = crypto.createHash("sha256").update(binary).digest("hex");
+    const curl = `#!/bin/sh
+case "$*" in
+  *SHA256SUMS*)
+    ${checksum === "missing" ? "printf 404" : `printf '%s  %s\\n' '${checksum === "mismatch" ? "0".repeat(64) : hash}' '${checksum === "unlisted" ? "other" : "codeagent-wrapper-windows-amd64.exe"}' > "$6"; printf 200`}
+    ;;
+  *) printf '#!/bin/sh\\nexit 0\\n' > "$4";;
+esac
+`;
+    fs.writeFileSync(path.join(toolsDir, "curl"), curl, { mode: 0o755 });
+    fs.writeFileSync(path.join(toolsDir, "uname"), '#!/bin/sh\ncase "$1" in -s) echo MINGW64;; -m) echo x86_64;; esac\n', { mode: 0o755 });
+    const result = spawnSync("bash", [path.resolve(__dirname, "../install.sh")], {
+      encoding: "utf8", timeout: 10000,
+      env: { ...process.env, HOME: f.installDir, USERPROFILE: f.installDir,
+        PATH: `${toolsDir}${path.delimiter}${process.env.PATH}`, SKIP_WARNING: "1", SHELL: "/bin/bash", INSTALL_DIR: path.join(f.installDir, "output") },
+    });
+    assert.equal(result.status, ["valid", "missing"].includes(checksum) ? 0 : 1, result.stderr);
+    if (checksum === "missing") assert.match(result.stderr, /WARNING.*SHA256SUMS absent/);
+    if (["mismatch", "unlisted"].includes(checksum)) {
+      assert.match(result.stderr, /checksum mismatch/);
+      assert.equal(fs.existsSync(path.join(f.installDir, "output", "bin")), false);
+    }
+  });
+}
+
+test("claudekit installs global hooks alongside do without owning its skill", async (t) => {
+  const f = fixture(t);
+  const config = require("../config.json");
+  const repoRoot = path.resolve(__dirname, "..");
+  assert.deepEqual(config.modules.claudekit.operations.map((op) => op.target), ["hooks"]);
+  for (const name of ["do", "claudekit"]) {
+    upsertModuleStatus(f.installDir, await applyModule(name, config, repoRoot, f.installDir, false, null, { wrapperInstalled: true }));
+  }
+  assert.equal(f.read().hooks.Stop[0].__module__, "do");
+  assert.ok(f.read().hooks.PreToolUse.some((entry) => entry.__module__ === "claudekit"));
+  await uninstallModule("claudekit", config, repoRoot, f.installDir, false);
+  assert.ok(fs.existsSync(path.join(f.installDir, "skills", "do", "SKILL.md")));
+  assert.equal(f.read().hooks.Stop[0].__module__, "do");
+});
+
+test("copy_dir fills existing target and uninstall keeps edited files", async (t) => {
+  const f = fixture(t);
+  const source = path.join(f.installDir, "source");
+  const target = path.join(f.installDir, "hooks");
+  fs.mkdirSync(source); fs.mkdirSync(target);
+  fs.writeFileSync(path.join(source, "new.py"), "source");
+  fs.writeFileSync(path.join(source, "edited.py"), "source");
+  fs.writeFileSync(path.join(target, "edited.py"), "user");
+  const config = { modules: { demo: { operations: [{ type: "copy_dir", source: "source", target: "hooks" }] } } };
+  await applyModule("demo", config, f.installDir, f.installDir, false);
+  assert.equal(fs.readFileSync(path.join(target, "edited.py"), "utf8"), "user");
+  assert.equal(fs.readFileSync(path.join(target, "new.py"), "utf8"), "source");
+  await uninstallModule("demo", config, f.installDir, f.installDir, false);
+  assert.equal(fs.existsSync(path.join(target, "new.py")), false);
+  assert.equal(fs.readFileSync(path.join(target, "edited.py"), "utf8"), "user");
+});
+
+test("update overwrites copy targets but preserves unowned merge files", async (t) => {
+  const f = fixture(t);
+  const repo = path.join(f.installDir, "repo");
+  fs.mkdirSync(path.join(repo, "skill", "nested"), { recursive: true });
+  fs.writeFileSync(path.join(repo, "skill", "SKILL.md"), "NEW");
+  fs.mkdirSync(path.join(repo, "merge", "commands"), { recursive: true });
+  fs.writeFileSync(path.join(repo, "merge", "commands", "owned.md"), "NEW OWNED");
+  fs.writeFileSync(path.join(repo, "merge", "commands", "foreign.md"), "MODULE FOREIGN");
+  fs.mkdirSync(path.join(f.installDir, "skills", "demo"), { recursive: true });
+  fs.writeFileSync(path.join(f.installDir, "skills", "demo", "SKILL.md"), "OLD");
+  fs.mkdirSync(path.join(f.installDir, "commands"), { recursive: true });
+  fs.writeFileSync(path.join(f.installDir, "commands", "owned.md"), "OLD OWNED");
+  fs.writeFileSync(path.join(f.installDir, "commands", "foreign.md"), "USER");
+  upsertModuleStatus(f.installDir, { module: "demo", merge_dir_files: ["commands/owned.md"] });
+  const config = { modules: { demo: { operations: [
+    { type: "copy_dir", source: "skill", target: "skills/demo" },
+    { type: "merge_dir", source: "merge" },
+  ] } } };
+  await applyModule("demo", config, repo, f.installDir, true, null, null, false);
+  assert.equal(fs.readFileSync(path.join(f.installDir, "skills", "demo", "SKILL.md"), "utf8"), "NEW");
+  assert.equal(fs.readFileSync(path.join(f.installDir, "commands", "owned.md"), "utf8"), "NEW OWNED");
+  assert.equal(fs.readFileSync(path.join(f.installDir, "commands", "foreign.md"), "utf8"), "USER");
+});
+
+test("uninstall removes tagged models agents and preserves edited and user agents", async (t) => {
+  const f = fixture(t);
+  const edited = { model: "original", __module__: "demo" };
+  edited.__hash__ = agentDefaultsHash(edited); edited.model = "user";
+  const models = modelsFixture(t, {
+    owned: { model: "default", __module__: "demo" }, edited,
+    user: { model: "mine" }, other: { model: "x", __module__: "other" },
+  });
+  await uninstallModule("demo", { modules: { demo: { operations: [] } } }, f.installDir, f.installDir, false);
+  const agents = JSON.parse(fs.readFileSync(models.modelsPath, "utf8")).agents;
+  assert.deepEqual(Object.keys(agents).sort(), ["edited", "other", "user"]);
+  if (process.platform !== "win32") assert.equal(fs.statSync(models.modelsPath).mode & 0o777, 0o600);
+});
+
+test("update continues all modules after wrapper failure and reports a summary", async (t) => {
+  const f = fixture(t);
+  const config = { modules: {
+    do: { operations: [{ type: "run_command", command: "bash install.sh" }] },
+    later: { operations: [] },
+  } };
+  for (const module of Object.keys(config.modules)) upsertModuleStatus(f.installDir, { module, status: "success" });
+  const sandbox = {
+    module: { exports: {} }, __dirname: path.dirname(cliPath), require,
+    process: { platform: process.platform, env: {}, stdout: { write() {} } },
+  };
+  vm.runInNewContext(fs.readFileSync(cliPath, "utf8") + `
+    runInstallSh = async () => { throw new Error("close codeagent-wrapper.exe"); };
+    const realApply = applyModule;
+    applyModule = async (...args) => { module.exports.calls.push(args[0]); return realApply(...args); };
+    module.exports.calls = [];
+    module.exports.update = updateInstalledModules;
+  `, sandbox);
+  await assert.rejects(sandbox.module.exports.update(f.installDir, null, config, false), /Update failures:.*\ncodeagent-wrapper: close codeagent-wrapper.exe/);
+  assert.deepEqual(Array.from(sandbox.module.exports.calls), ["do", "later"]);
+  assert.equal(loadInstalledStatus(f.installDir).modules.later.status, "success");
+});
+
+for (const scenario of ["valid", "mismatch", "missing", "unlisted"]) {
+  test(`install.bat checksum verification with injected download: ${scenario}`, (t) => {
+    if (process.platform !== "win32") return t.skip("Windows PowerShell");
+    const f = fixture(t);
+    const binary = path.join(f.installDir, "wrapper.exe");
+    fs.writeFileSync(binary, "local binary bytes");
+    const hash = crypto.createHash("sha256").update("local binary bytes").digest("hex");
+    const script = fs.readFileSync(path.resolve(__dirname, "../install.bat"), "utf8");
+    const line = script.split(/\r?\n/).find((line) => line.startsWith('powershell -NoLogo -NoProfile -Command'));
+    const command = line.slice(line.indexOf('-Command "') + 10, -1);
+    const injected = scenario === "missing"
+      ? 'function Invoke-WebRequest { $e = New-Object System.Net.WebException; $response = [pscustomobject]@{ StatusCode = 404 }; $e | Add-Member -MemberType NoteProperty -Name Response -Value $response -Force; throw $e }; '
+      : `function Invoke-WebRequest { [pscustomobject]@{ Content = '${scenario === "mismatch" ? "0".repeat(64) : hash}  ${scenario === "unlisted" ? "other.exe" : "wrapper.exe"}' } }; `;
+    const result = spawnSync("powershell", ["-NoLogo", "-NoProfile", "-Command", injected + command], {
+      encoding: "utf8", timeout: 10000, env: { ...process.env, HOME: f.installDir, USERPROFILE: f.installDir,
+        URL: "https://invalid.example/release/wrapper.exe", TEMP_FILE: binary, BINARY_NAME: "wrapper.exe" },
+    });
+    assert.equal(result.status, ["valid", "missing"].includes(scenario) ? 0 : 1, result.stdout + result.stderr);
+    if (scenario === "missing") assert.match(result.stdout, /SHA256SUMS absent/);
+  });
+}
+
+test("install.bat replaces a running executable by renaming the old image", async (t) => {
+  if (process.platform !== "win32") return t.skip("Windows executable locking");
+  const f = fixture(t);
+  const dest = path.join(f.installDir, "codeagent-wrapper.exe");
+  const incoming = path.join(f.installDir, "incoming.exe");
+  fs.copyFileSync(process.execPath, dest);
+  fs.writeFileSync(incoming, "replacement");
+  fs.writeFileSync(dest + ".old", "stale");
+  const child = require("node:child_process").spawn(dest, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore", windowsHide: true,
+    env: { ...process.env, HOME: f.installDir, USERPROFILE: f.installDir } });
+  await new Promise((resolve, reject) => { child.once("spawn", resolve); child.once("error", reject); });
+  try {
+    const bat = fs.readFileSync(path.resolve(__dirname, "../install.bat"), "utf8");
+    const start = bat.indexOf("rem A running executable");
+    const end = bat.indexOf('"%DEST%" --version', start);
+    const harness = path.join(f.installDir, "replace.bat");
+    fs.writeFileSync(harness, "@echo off\r\n" + bat.slice(start, end).replace(/\r?\n/g, "\r\n") + "exit /b 0\r\n:fail\r\nexit /b 1\r\n");
+    const result = spawnSync("cmd.exe", ["/d", "/c", harness], { encoding: "utf8", windowsHide: true, timeout: 10000,
+      env: { ...process.env, HOME: f.installDir, USERPROFILE: f.installDir, DEST: dest, TEMP_FILE: incoming } });
+    assert.equal(result.status, 0, result.stdout + result.stderr);
+    assert.equal(fs.readFileSync(dest, "utf8"), "replacement");
+    assert.ok(fs.statSync(dest + ".old").size > 1000);
+  } finally {
+    const exited = new Promise((resolve) => child.once("exit", resolve));
+    child.kill();
+    await exited;
+  }
+});
+
+test("installer tests never modify the real home models.json", () => {
+  if (!originalModelsSnapshot) {
+    assert.equal(fs.existsSync(originalModelsPath), false);
+    return;
+  }
+  assert.equal(fs.existsSync(originalModelsPath), true);
+  const stat = fs.statSync(originalModelsPath);
+  const hash = crypto.createHash("sha256").update(fs.readFileSync(originalModelsPath)).digest("hex");
+  assert.equal(hash, originalModelsSnapshot.hash);
+  assert.equal(stat.mtimeMs, originalModelsSnapshot.mtimeMs);
 });

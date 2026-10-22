@@ -15,7 +15,7 @@ const API_HEADERS = {
   "User-Agent": "myclaude-npx",
   Accept: "application/vnd.github+json",
 };
-const WRAPPER_REQUIRED_MODULES = new Set(["do", "omo"]);
+const WRAPPER_REQUIRED_MODULES = new Set(["do", "omo", "course"]);
 const WRAPPER_REQUIRED_SKILLS = new Set(["dev"]);
 
 function parseArgs(argv) {
@@ -392,8 +392,7 @@ function mergeHookEntries(moduleName, moduleHooks, installDir, pluginRoots) {
   for (const [hookType, entries] of Object.entries(settings.hooks)) {
     if (!Array.isArray(entries)) continue;
     settings.hooks[hookType] = entries.filter((entry) =>
-      !(entry && (entry.__module__ === moduleName ||
-        (!Object.prototype.hasOwnProperty.call(entry, "__module__") && entryPointsInto(entry, pluginRoots))))
+      !(entry && entry.__module__ === moduleName)
     );
   }
 
@@ -413,6 +412,11 @@ function mergeHookEntries(moduleName, moduleHooks, installDir, pluginRoots) {
         })),
         __module__: moduleName,
       };
+      settings.hooks[hookType] = settings.hooks[hookType].filter((old) => {
+        if (!old || Object.prototype.hasOwnProperty.call(old, "__module__")) return true;
+        const { __module__, ...plain } = entryCopy;
+        return !deepEqual(old, plain);
+      });
       const key = hookEntryKey(entryCopy);
       if (!settings.hooks[hookType].some((existing) => existing && hookEntryKey(existing) === key)) {
         settings.hooks[hookType].push(entryCopy);
@@ -438,8 +442,7 @@ function unmergeHooksFromSettings(moduleName, installDir, pluginRoots = []) {
     const entries = settings.hooks[hookType];
     if (!Array.isArray(entries)) continue;
     settings.hooks[hookType] = entries.filter((entry) =>
-      !(entry && (entry.__module__ === moduleName ||
-        (!Object.prototype.hasOwnProperty.call(entry, "__module__") && entryPointsInto(entry, pluginRoots))))
+      !(entry && entry.__module__ === moduleName)
     );
     if (!settings.hooks[hookType].length) {
       delete settings.hooks[hookType];
@@ -462,26 +465,26 @@ function mergeModuleHooks(moduleName, mod, installDir) {
     if (!target) continue;
 
     const targetDir = path.join(installDir, target);
-    const hooksFile = path.join(targetDir, "hooks", "hooks.json");
-    if (!fs.existsSync(hooksFile)) continue;
+    for (const hooksFile of [path.join(targetDir, "hooks", "hooks.json"), path.join(targetDir, "hooks.json")]) {
+      if (!fs.existsSync(hooksFile)) continue;
 
-    let hooksConfig;
-    try {
-      hooksConfig = JSON.parse(fs.readFileSync(hooksFile, "utf8"));
-    } catch {
-      continue;
-    }
-    if (!isPlainObject(hooksConfig.hooks)) continue;
-    const pluginRoot = targetDir.replace(/\\/g, "/");
-    pluginRoots.push(pluginRoot);
-    const hooks = replaceHookVariables(hooksConfig.hooks, pluginRoot);
-    for (const [hookType, entries] of Object.entries(hooks)) {
-      if (!Array.isArray(entries)) continue;
-      if (!moduleHooks[hookType]) moduleHooks[hookType] = [];
-      moduleHooks[hookType].push(...entries);
+      let hooksConfig;
+      try {
+        hooksConfig = JSON.parse(fs.readFileSync(hooksFile, "utf8"));
+      } catch {
+        continue;
+      }
+      if (!isPlainObject(hooksConfig.hooks)) continue;
+      const pluginRoot = targetDir.replace(/\\/g, "/");
+      pluginRoots.push(pluginRoot);
+      const hooks = replaceHookVariables(hooksConfig.hooks, pluginRoot);
+      for (const [hookType, entries] of Object.entries(hooks)) {
+        if (!Array.isArray(entries)) continue;
+        if (!moduleHooks[hookType]) moduleHooks[hookType] = [];
+        moduleHooks[hookType].push(...entries);
+      }
     }
   }
-
   if (!pluginRoots.length) return false;
   return mergeHookEntries(moduleName, moduleHooks, installDir, pluginRoots);
 }
@@ -610,21 +613,30 @@ async function updateInstalledModules(installDir, tag, config, dryRun, explicitF
     }
 
     await fs.promises.mkdir(installDir, { recursive: true });
-    const installState = { wrapperInstalled: false };
+    const installState = { wrapperInstalled: false, continueWrapperFailure: true, failures: [] };
 
     async function ensureWrapperInstalled() {
       if (installState.wrapperInstalled) return;
       process.stdout.write("Installing codeagent-wrapper...\n");
-      await runInstallSh(repoRoot, installDir, tag, offline);
+      try {
+        await runInstallSh(repoRoot, installDir, tag, offline);
+      } catch (err) {
+        installState.failures.push(`codeagent-wrapper: ${err.message}`);
+      }
       installState.wrapperInstalled = true;
     }
 
     for (const name of toUpdate) {
       if (WRAPPER_REQUIRED_MODULES.has(name)) await ensureWrapperInstalled();
       process.stdout.write(`Updating module: ${name}\n`);
-      const r = await applyModule(name, config, repoRoot, installDir, true, tag, installState, explicitForce, offline);
-      upsertModuleStatus(installDir, r);
+      try {
+        const r = await applyModule(name, config, repoRoot, installDir, true, tag, installState, explicitForce, offline);
+        upsertModuleStatus(installDir, r);
+      } catch (err) {
+        installState.failures.push(`${name}: ${err.message}`);
+      }
     }
+    if (installState.failures.length) throw new Error(`Update failures:\n${installState.failures.join("\n")}`);
   } finally {
     if (tmp) await rmTree(tmp);
   }
@@ -841,7 +853,6 @@ async function copyFile(src, dst, force) {
 }
 
 async function copyDirRecursive(src, dst, force) {
-  if (fs.existsSync(dst) && !force) return;
   await fs.promises.mkdir(dst, { recursive: true });
 
   const entries = await fs.promises.readdir(src, { withFileTypes: true });
@@ -954,12 +965,45 @@ function agentDefaultsHash(cfg) {
   return crypto.createHash("sha256").update(JSON.stringify(canonicalize(defaults))).digest("hex").slice(0, 12);
 }
 
+function writeModels(modelsPath, models) {
+  fs.writeFileSync(modelsPath, JSON.stringify(models, null, 2) + "\n", { encoding: "utf8", mode: 0o600 });
+  if (process.platform !== "win32") fs.chmodSync(modelsPath, 0o600);
+}
+
+function unmergeModuleAgents(moduleName, config, installDir) {
+  const modelsPath = path.join(os.homedir(), ".codeagent", "models.json");
+  if (!fs.existsSync(modelsPath)) return;
+  let models;
+  try { models = readJsonFile(modelsPath); }
+  catch (err) { process.stderr.write(`Warning: leaving ${modelsPath} untouched: ${err.message}\n`); return; }
+  if (!isPlainObject(models) || !isPlainObject(models.agents)) return;
+  let modified = false;
+  const installed = loadInstalledStatus(installDir).modules;
+  for (const [name, agent] of Object.entries(models.agents)) {
+    if (!agent || agent.__module__ !== moduleName) continue;
+    if (agent.__hash__ && agentDefaultsHash(agent) !== agent.__hash__) {
+      process.stdout.write(`Keeping user-edited agent: ${name}\n`);
+      continue;
+    }
+    delete models.agents[name];
+    modified = true;
+    for (const [other, status] of Object.entries(installed)) {
+      const replacement = config.modules[other] && config.modules[other].agents && config.modules[other].agents[name];
+      if (other !== moduleName && status.status === "success" && replacement) {
+        models.agents[name] = { ...replacement, __module__: other, __hash__: agentDefaultsHash(replacement) };
+        break;
+      }
+    }
+  }
+  if (modified) writeModels(modelsPath, models);
+}
+
 function mergeModuleAgentsToModels(moduleName, mod, repoRoot) {
   const moduleAgents = mod && mod.agents;
   if (!isPlainObject(moduleAgents) || !Object.keys(moduleAgents).length) return false;
 
   const modelsPath = path.join(os.homedir(), ".codeagent", "models.json");
-  fs.mkdirSync(path.dirname(modelsPath), { recursive: true });
+  fs.mkdirSync(path.dirname(modelsPath), { recursive: true, mode: 0o700 });
 
   let models;
   if (fs.existsSync(modelsPath)) {
@@ -993,7 +1037,7 @@ function mergeModuleAgentsToModels(moduleName, mod, repoRoot) {
     }
   }
 
-  if (modified) fs.writeFileSync(modelsPath, JSON.stringify(models, null, 2) + "\n", "utf8");
+  if (modified) writeModels(modelsPath, models);
   return modified;
 }
 
@@ -1032,7 +1076,12 @@ async function applyModule(moduleName, config, repoRoot, installDir, force, tag,
           result.operations.push({ type, status: "success", skipped: true });
           continue;
         }
-        await runInstallSh(repoRoot, installDir, tag, offline);
+        try {
+          await runInstallSh(repoRoot, installDir, tag, offline);
+        } catch (err) {
+          if (!installState || !installState.continueWrapperFailure) throw err;
+          installState.failures.push(`codeagent-wrapper: ${err.message}`);
+        }
         if (installState) installState.wrapperInstalled = true;
       } else {
         throw new Error(`Unsupported operation type: ${type}`);
@@ -1127,7 +1176,9 @@ async function removeCopyDirContents(srcDir, targetDir, dryRun) {
     const target = path.join(targetDir, rel);
     if (!fs.existsSync(target)) continue;
     try {
-      if (!(await fs.promises.lstat(target)).isDirectory()) removableFiles.push(target);
+      const st = await fs.promises.lstat(target);
+      if (st.isFile() && (await fs.promises.readFile(target)).equals(await fs.promises.readFile(path.join(srcDir, rel)))) removableFiles.push(target);
+      else process.stdout.write(`Keeping ${target}: differs from the installed copy\n`);
     } catch {
       continue;
     }
@@ -1145,7 +1196,8 @@ async function removeCopyDirContents(srcDir, targetDir, dryRun) {
 }
 
 async function uninstallModule(moduleName, config, repoRoot, installDir, dryRun) {
-  validateInstallJson(installDir);
+  loadInstalledStatus(installDir);
+  loadSettings(installDir);
   const mod = config && config.modules && config.modules[moduleName];
   if (!mod) throw new Error(`Unknown module: ${moduleName}`);
   const ops = Array.isArray(mod.operations) ? mod.operations : [];
@@ -1184,8 +1236,7 @@ async function uninstallModule(moduleName, config, repoRoot, installDir, dryRun)
       if (srcDir && await dirExists(srcDir)) {
         await removeCopyDirContents(srcDir, targetDir, dryRun);
       } else {
-        if (dryRun) process.stdout.write(`- remove ${targetDir}\n`);
-        else await removePathIfExists(targetDir);
+        process.stdout.write(`Keeping ${targetDir}: source unavailable\n`);
       }
       continue;
     }
@@ -1199,6 +1250,12 @@ async function uninstallModule(moduleName, config, repoRoot, installDir, dryRun)
         const parts = String(rel).split("/").filter(Boolean);
         if (parts.includes("..")) continue;
         const p = path.join(installDir, ...parts);
+        const src = path.join(repoRoot, source, ...parts);
+        if (!fs.existsSync(p)) continue;
+        if (!fs.existsSync(src) || !fs.lstatSync(p).isFile() || !fs.readFileSync(p).equals(fs.readFileSync(src))) {
+          process.stdout.write(`Keeping ${p}: differs from the installed copy\n`);
+          continue;
+        }
         if (dryRun) process.stdout.write(`- remove ${p}\n`);
         else {
           await removePathIfExists(p);
@@ -1243,6 +1300,7 @@ async function uninstallModule(moduleName, config, repoRoot, installDir, dryRun)
       typeof op.source === "string" && fs.existsSync(path.join(repoRoot, op.source, "hooks", "hooks.json")))
     .map((op) => path.resolve(installDir, op.target).replace(/\\/g, "/"));
   unmergeHooksFromSettings(moduleName, installDir, pluginRoots);
+  unmergeModuleAgents(moduleName, config, installDir);
   deleteModuleStatus(installDir, moduleName);
 }
 
@@ -1315,7 +1373,7 @@ function printPostInstallInfo(installDir) {
   process.stdout.write("\nBackend CLIs detected:\n");
   process.stdout.write("  " + backends.map((b) => `${b} ${detected[b] ? "✓" : "✗"}`).join("  |  ") + "\n");
   process.stdout.write("\nNext steps:\n");
-  process.stdout.write("  1. Configure API keys in ~/.codeagent/models.json\n");
+  process.stdout.write("  1. Log in to each backend CLI you use (codex login / claude / gemini), or remap agents in ~/.codeagent/models.json; api_key there is optional.\n");
   process.stdout.write('  2. Try: /do "your first task"\n');
   process.stdout.write("\n");
 }
@@ -1428,7 +1486,7 @@ async function main() {
   }
   if (args.list && args.update) throw new Error("Cannot combine --list and --update");
 
-  if (!args.list) validateInstallJson(installDir);
+  if (!args.list && args.command !== "uninstall") validateInstallJson(installDir);
 
   if (args.command === "uninstall") {
     const config = readLocalConfig();
@@ -1448,6 +1506,8 @@ async function main() {
           .map((s) => s.trim())
           .filter(Boolean);
       }
+    } else if (args.yes) {
+      toRemove = installed;
     } else {
       const modules = (config && config.modules) || {};
       const items = [];
