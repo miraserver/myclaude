@@ -31,6 +31,7 @@ function parseArgs(argv) {
     yes: false,
     offline: false,
     skipWrapper: false,
+    withClaudeMd: false,
   };
 
   let i = 0;
@@ -48,6 +49,7 @@ function parseArgs(argv) {
     else if (a === "--update") out.update = true;
     else if (a === "--offline") out.offline = true;
     else if (a === "--skip-wrapper") out.skipWrapper = true;
+    else if (a === "--with-claude-md") out.withClaudeMd = true;
     else if (a === "--tag") out.tag = argv[++i];
     else if (a === "--module") out.module = argv[++i];
     else if (a === "-y" || a === "--yes") out.yes = true;
@@ -78,6 +80,7 @@ function printHelp() {
       "  --list                 List installable items and exit",
       "  --update               Update already installed modules",
       "  --offline              Install/update from local package contents",
+      "  --with-claude-md       Install the optional global CLAUDE.md workflow instructions",
       "  --skip-wrapper         Skip codeagent-wrapper install (or MYCLAUDE_SKIP_WRAPPER=1)",
       "  --tag <tag>            Install a specific GitHub tag",
       "  --module <names>       For uninstall: comma-separated module names",
@@ -548,7 +551,6 @@ async function detectInstalledModuleNames(config, repoRoot, installDir) {
 async function updateInstalledModules(installDir, tag, config, dryRun, explicitForce = false, offline = false, requestedModules = null) {
   validateInstallJson(installDir);
   const mods = (config && config.modules) || {};
-  if (!Object.keys(mods).length) throw new Error("No modules found in config.json");
 
   let repoRoot = repoRootFromHere();
   let tmp = null;
@@ -599,7 +601,7 @@ async function updateInstalledModules(installDir, tag, config, dryRun, explicitF
         process.stdout.write(`${name} is not installed; run without --update to install it\n`);
         return false;
       }
-      return Object.prototype.hasOwnProperty.call(mods, name);
+      return Object.prototype.hasOwnProperty.call(mods, name) || name.startsWith("skill:");
     });
 
     if (!toUpdate.length) {
@@ -630,7 +632,13 @@ async function updateInstalledModules(installDir, tag, config, dryRun, explicitF
       if (WRAPPER_REQUIRED_MODULES.has(name)) await ensureWrapperInstalled();
       process.stdout.write(`Updating module: ${name}\n`);
       try {
-        const r = await applyModule(name, config, repoRoot, installDir, true, tag, installState, explicitForce, offline);
+        let r;
+        if (name.startsWith("skill:")) {
+          const skillName = name.slice(6);
+          await copyDirRecursive(path.join(repoRoot, "skills", skillName), path.join(installDir, "skills", skillName), true);
+          r = { module: name, status: "installed", installed_at: new Date().toISOString(), operations: [{ type: "copy_dir", source: `skills/${skillName}`, target: `skills/${skillName}` }] };
+        } else r = await applyModule(name, config, repoRoot, installDir, true, tag, installState, explicitForce, offline);
+        r.version = tag || "offline";
         upsertModuleStatus(installDir, r);
       } catch (err) {
         installState.failures.push(`${name}: ${err.message}`);
@@ -648,11 +656,11 @@ function buildItems(config, skills) {
   const modules = (config && config.modules) || {};
   for (const [name, mod] of Object.entries(modules)) {
     const desc = mod && typeof mod.description === "string" ? mod.description : "";
-    items.push({
+      items.push({
       id: `module:${name}`,
       label: `module:${name}${desc ? ` - ${desc}` : ""}`,
       kind: "module",
-      moduleName: name,
+        moduleName: name,
     });
   }
 
@@ -1198,7 +1206,10 @@ async function removeCopyDirContents(srcDir, targetDir, dryRun) {
 async function uninstallModule(moduleName, config, repoRoot, installDir, dryRun) {
   loadInstalledStatus(installDir);
   loadSettings(installDir);
-  const mod = config && config.modules && config.modules[moduleName];
+  const skillName = moduleName.startsWith("skill:") ? moduleName.slice(6) : null;
+  const mod = skillName
+    ? { operations: [{ type: "copy_dir", source: `skills/${skillName}`, target: `skills/${skillName}` }] }
+    : config && config.modules && config.modules[moduleName];
   if (!mod) throw new Error(`Unknown module: ${moduleName}`);
   const ops = Array.isArray(mod.operations) ? mod.operations : [];
   const status = loadInstalledStatus(installDir);
@@ -1304,11 +1315,11 @@ async function uninstallModule(moduleName, config, repoRoot, installDir, dryRun)
   deleteModuleStatus(installDir, moduleName);
 }
 
-async function installDefaultConfigs(installDir, repoRoot) {
+async function installDefaultConfigs(installDir, repoRoot, withClaudeMd = false) {
   try {
     const claudeMdTarget = path.join(installDir, "CLAUDE.md");
     const claudeMdSrc = path.join(repoRoot, "memorys", "CLAUDE.md");
-    if (!fs.existsSync(claudeMdTarget) && fs.existsSync(claudeMdSrc)) {
+    if (withClaudeMd && !fs.existsSync(claudeMdTarget) && fs.existsSync(claudeMdSrc)) {
       await fs.promises.copyFile(claudeMdSrc, claudeMdTarget);
       process.stdout.write(`Installed CLAUDE.md to ${claudeMdTarget}\n`);
     }
@@ -1328,6 +1339,9 @@ async function installDefaultConfigs(installDir, repoRoot) {
 
 function printPostInstallInfo(installDir) {
   process.stdout.write("\n");
+  if (typeof fs.existsSync === "function" && !fs.existsSync(path.join(installDir, "CLAUDE.md"))) {
+    process.stdout.write("Optional: add --with-claude-md to install the global CLAUDE.md workflow instructions.\n");
+  }
 
   // Check codeagent-wrapper version
   const wrapperBin = wrapperBinPath(installDir);
@@ -1378,7 +1392,7 @@ function printPostInstallInfo(installDir) {
   process.stdout.write("\n");
 }
 
-async function installSelected(picks, tag, config, installDir, force, dryRun, offline = false) {
+async function installSelected(picks, tag, config, installDir, force, dryRun, offline = false, withClaudeMd = false) {
   validateInstallJson(installDir);
   const needRepo = picks.some((p) => p.kind !== "wrapper");
   const needWrapper = picks.some((p) => p.kind === "wrapper");
@@ -1442,6 +1456,7 @@ async function installSelected(picks, tag, config, installDir, force, dryRun, of
           force,
           offline
         );
+        r.version = tag || "offline";
         upsertModuleStatus(installDir, r);
         continue;
       }
@@ -1452,20 +1467,29 @@ async function installSelected(picks, tag, config, installDir, force, dryRun, of
           process.stdout.write(`Skill ${p.skillName} matches module ${moduleName}; installing the module instead.\n`);
           const r = await applyModule(moduleName, config, repoRoot, installDir, force, tag,
             installState, force, offline);
+          r.version = tag || "offline";
           upsertModuleStatus(installDir, r);
           continue;
         }
         if (WRAPPER_REQUIRED_SKILLS.has(p.skillName)) await ensureWrapperInstalled();
         process.stdout.write(`Installing skill: ${p.skillName}\n`);
+        const skillSource = `skills/${p.skillName}`;
         await copyDirRecursive(
           path.join(repoRoot, "skills", p.skillName),
           path.join(installDir, "skills", p.skillName),
           force
         );
+        upsertModuleStatus(installDir, {
+          module: `skill:${p.skillName}`,
+          status: "installed",
+          version: tag || "offline",
+          installed_at: new Date().toISOString(),
+          operations: [{ type: "copy_dir", source: skillSource, target: `skills/${p.skillName}` }],
+        });
       }
     }
 
-    await installDefaultConfigs(installDir, repoRoot);
+    await installDefaultConfigs(installDir, repoRoot, withClaudeMd);
     printPostInstallInfo(installDir);
   } finally {
     await rmTree(tmp);
@@ -1521,12 +1545,16 @@ async function main() {
           moduleName: name,
         });
       }
+      for (const name of installed) {
+        if (!name.startsWith("skill:")) continue;
+        items.push({ id: name, label: name, kind: "skill", skillName: name.slice(6) });
+      }
       if (!items.length) {
         process.stdout.write(`No installed modules found in ${installDir}.\n`);
         return;
       }
       const picks = await promptMultiSelect(items, "myclaude uninstall");
-      toRemove = picks.map((p) => p.moduleName);
+      toRemove = picks.map((p) => p.moduleName || p.id);
     }
 
     toRemove = toRemove.filter((m) => installedSet.has(m));
@@ -1560,7 +1588,8 @@ async function main() {
   if (!tag && !args.offline) {
     try {
       tag = await withTimeout(fetchLatestTag(), 5000, "fetch latest tag");
-    } catch {
+    } catch (err) {
+      process.stderr.write(`Warning: could not fetch latest tag (${err.message}); using bundled package content in offline mode.\n`);
       tag = null;
     }
   }
@@ -1590,8 +1619,19 @@ async function main() {
   }
 
   const items = buildItems(config, skills);
+  const installedEntries = loadInstalledStatus(installDir).modules;
+  for (const item of items) {
+    const key = item.kind === "module" ? item.moduleName : item.kind === "skill" ? `skill:${item.skillName}` : null;
+    const entry = key && installedEntries[key];
+    if (entry) item.label += ` [installed${entry.version ? ` ${entry.version}` : ""}]`;
+  }
   if (args.list) {
-    for (const it of items) process.stdout.write(`${it.id}\n`);
+    const installed = loadInstalledStatus(installDir).modules;
+    for (const it of items) {
+      const key = it.kind === "module" ? it.moduleName : it.kind === "skill" ? `skill:${it.skillName}` : null;
+      const entry = key && installed[key];
+      process.stdout.write(`${it.id}${entry ? ` (installed${entry.version ? `, ${entry.version}` : ""})` : ""}\n`);
+    }
     return;
   }
 
@@ -1602,7 +1642,7 @@ async function main() {
     return;
   }
 
-  await installSelected(picks, tag, config, installDir, args.force, args.dryRun, args.offline);
+  await installSelected(picks, tag, config, installDir, args.force, args.dryRun, args.offline, args.withClaudeMd);
   process.stdout.write("Done.\n");
 }
 

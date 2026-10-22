@@ -96,6 +96,8 @@ def parse_args(argv: Optional[Iterable[str]] = None) -> argparse.Namespace:
         action="store_true",
         help="Force overwrite existing files",
     )
+    parser.add_argument("--with-claude-md", action="store_true",
+                        help="Install the optional global CLAUDE.md workflow instructions")
     parser.add_argument(
         "--verbose", "-v",
         action="store_true",
@@ -567,7 +569,7 @@ def list_modules_with_status(config: Dict[str, Any], ctx: Dict[str, Any]) -> Non
     print("\n" + "=" * 70)
     print("Module Status")
     print("=" * 70)
-    print(f"{'#':<3} {'Name':<15} {'Status':<15} {'Installed At':<20} Description")
+    print(f"{'#':<3} {'Name':<15} {'Status':<15} {'Version':<10} {'Installed At':<20} Description")
     print("-" * 70)
 
     for idx, (name, cfg) in enumerate(config.get("modules", {}).items(), 1):
@@ -575,10 +577,12 @@ def list_modules_with_status(config: Dict[str, Any], ctx: Dict[str, Any]) -> Non
         if installed_status.get(name, False):
             status = "✅ Installed"
             installed_at = status_modules.get(name, {}).get("installed_at", "")[:16]
+            version = status_modules.get(name, {}).get("version", "")
         else:
             status = "⬚ Not installed"
             installed_at = ""
-        print(f"{idx:<3} {name:<15} {status:<15} {installed_at:<20} {desc}")
+            version = ""
+        print(f"{idx:<3} {name:<15} {status:<15} {version:<10} {installed_at:<20} {desc}")
 
     total = len(config.get("modules", {}))
     installed_count = sum(1 for v in installed_status.values() if v)
@@ -698,6 +702,7 @@ def uninstall_module(name: str, cfg: Dict[str, Any], ctx: Dict[str, Any]) -> Dic
     result: Dict[str, Any] = {
         "module": name,
         "status": "success",
+        "version": ctx.get("version", "offline"),
         "uninstalled_at": datetime.now().isoformat(),
     }
 
@@ -1379,7 +1384,7 @@ def install_default_configs(ctx: Dict[str, Any]) -> None:
         # Copy memorys/CLAUDE.md -> {install_dir}/CLAUDE.md
         claude_md_src = config_dir / "memorys" / "CLAUDE.md"
         claude_md_dst = install_dir / "CLAUDE.md"
-        if not claude_md_dst.exists() and claude_md_src.exists():
+        if ctx.get("with_claude_md") and not claude_md_dst.exists() and claude_md_src.exists():
             shutil.copy2(claude_md_src, claude_md_dst)
             print(f"  Installed CLAUDE.md to {claude_md_dst}")
             write_log({"level": "INFO", "message": f"Installed CLAUDE.md to {claude_md_dst}"}, ctx)
@@ -1399,6 +1404,8 @@ def install_default_configs(ctx: Dict[str, Any]) -> None:
 def print_post_install_info(ctx: Dict[str, Any]) -> None:
     """Print post-install verification and setup guidance."""
     install_dir = ctx["install_dir"]
+    if not (install_dir / "CLAUDE.md").exists():
+        print("Optional: add --with-claude-md to install the global CLAUDE.md workflow instructions.")
 
     # Check codeagent-wrapper version
     wrapper_bin = _wrapper_bin_path(install_dir)
@@ -1508,6 +1515,8 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
         return 1
 
     ctx = resolve_paths(config, args)
+    ctx["with_claude_md"] = args.with_claude_md
+    ctx["version"] = "offline"
     if args.module:
         try:
             select_modules(config, args.module)

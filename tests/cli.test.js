@@ -304,6 +304,60 @@ test("matching skill selection installs its configured module and records status
   assert.ok(fs.existsSync(path.join(installDir, "installed_modules.json")));
 });
 
+test("standalone skill install, update, and uninstall track byte-equal ownership", async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "myclaude-standalone-skill-"));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const repo = path.join(root, "repo");
+  const installDir = path.join(root, "install");
+  fs.mkdirSync(path.join(repo, "bin"), { recursive: true });
+  fs.mkdirSync(path.join(repo, "skills", "solo"), { recursive: true });
+  fs.writeFileSync(path.join(repo, "skills", "solo", "SKILL.md"), "v1");
+  const sandbox = {
+    module: { exports: {} }, __dirname: path.join(repo, "bin"),
+    require: (name) => name === "child_process" ? { spawn: () => { throw new Error("unexpected spawn"); }, spawnSync } : require(name),
+    process: { platform: process.platform, env: { ...process.env }, stdout: { write() {} }, stderr: { write() {} } },
+  };
+  vm.runInNewContext(fs.readFileSync(cliPath, "utf8") + `
+    repoRootFromHere = () => ${JSON.stringify(repo)};
+    module.exports.testInstallSelected = installSelected;
+    module.exports.testUpdate = updateInstalledModules;
+    module.exports.testUninstall = uninstallModule;
+  `, sandbox);
+  await sandbox.module.exports.testInstallSelected([{ kind: "skill", skillName: "solo" }], null, {}, installDir, false, false, true);
+  let entry = loadInstalledStatus(installDir).modules["skill:solo"];
+  assert.equal(entry.version, "offline");
+  fs.writeFileSync(path.join(repo, "skills", "solo", "SKILL.md"), "v2");
+  await sandbox.module.exports.testUpdate(installDir, null, { modules: {} }, false, false, true);
+  assert.equal(fs.readFileSync(path.join(installDir, "skills", "solo", "SKILL.md"), "utf8"), "v2");
+  assert.equal(loadInstalledStatus(installDir).modules["skill:solo"].version, "offline");
+  fs.writeFileSync(path.join(installDir, "skills", "solo", "user.txt"), "preserve");
+  await sandbox.module.exports.testUninstall("skill:solo", {}, repo, installDir, false);
+  assert.equal(fs.existsSync(path.join(installDir, "skills", "solo", "SKILL.md")), false);
+  assert.equal(fs.readFileSync(path.join(installDir, "skills", "solo", "user.txt"), "utf8"), "preserve");
+  assert.equal(loadInstalledStatus(installDir).modules["skill:solo"], undefined);
+});
+
+test("latest tag fetch failure warns and uses bundled offline content", async (t) => {
+  const f = fixture(t);
+  let stdout = "";
+  let stderr = "";
+  const sandbox = {
+    module: { exports: {} }, __dirname: path.dirname(cliPath),
+    require,
+    process: { argv: ["node", cliPath, "--list", "--install-dir", f.installDir], cwd: () => process.cwd(), env: { ...process.env }, stdout: { write: (s) => { stdout += s; } }, stderr: { write: (s) => { stderr += s; } } },
+    setTimeout,
+    clearTimeout,
+  };
+  vm.runInNewContext(fs.readFileSync(cliPath, "utf8") + `
+    fetchLatestTag = async () => { throw new Error("stub fetch failure"); };
+    module.exports.testMain = main;
+  `, sandbox);
+  await sandbox.module.exports.testMain();
+  assert.match(stderr, /stub fetch failure/);
+  assert.match(stderr, /using bundled package content in offline mode/);
+  assert.match(stdout, /module:/);
+});
+
 test("install.bat builds latest and tagged release URLs", () => {
   const source = fs.readFileSync(path.resolve(__dirname, "../install.bat"), "utf8");
   assert.doesNotMatch(source, /releases\/%VERSION%\/download/);
@@ -1203,7 +1257,7 @@ for (const failure of ["merge_hooks", "merge_agents"]) {
   });
 }
 
-for (const scenario of ["fresh", "matching CLAUDE.md", "user CLAUDE.md", "existing skill"]) {
+for (const scenario of ["fresh", "opt-in", "matching CLAUDE.md", "user CLAUDE.md", "existing skill"]) {
   test(`default configs install codeagent dependency safely: ${scenario}`, async (t) => {
     const f = fixture(t);
     modelsFixture(t);
@@ -1218,17 +1272,22 @@ for (const scenario of ["fresh", "matching CLAUDE.md", "user CLAUDE.md", "existi
       fs.writeFileSync(skill, "user skill\n");
     }
     upsertModuleStatus(f.installDir, await applyModule("harness", config, repoRoot, f.installDir, false));
-    await installDefaultConfigs(f.installDir, repoRoot);
+    await installDefaultConfigs(f.installDir, repoRoot, scenario === "opt-in");
     if (scenario === "user CLAUDE.md") {
       assert.equal(fs.readFileSync(claude, "utf8"), "user instructions\n");
       assert.equal(fs.existsSync(skill), false);
-    } else {
+    } else if (["opt-in", "matching CLAUDE.md"].includes(scenario)) {
       assert.deepEqual(fs.readFileSync(claude), fs.readFileSync(path.join(repoRoot, "memorys/CLAUDE.md")));
-      assert.deepEqual(fs.readFileSync(skill), scenario === "existing skill"
-        ? Buffer.from("user skill\n") : fs.readFileSync(path.join(repoRoot, "skills/codeagent/SKILL.md")));
+      assert.deepEqual(fs.readFileSync(skill), fs.readFileSync(path.join(repoRoot, "skills/codeagent/SKILL.md")));
+    } else if (scenario === "existing skill") {
+      assert.equal(fs.existsSync(claude), false);
+      assert.equal(fs.readFileSync(skill, "utf8"), "user skill\n");
     }
     await uninstallModule("harness", config, repoRoot, f.installDir, false);
-    if (scenario !== "user CLAUDE.md") assert.equal(fs.existsSync(skill), true);
+    if (scenario === "fresh") assert.equal(fs.existsSync(claude), false);
+    if (scenario === "fresh") assert.equal(fs.existsSync(skill), false);
+    if (scenario === "existing skill") assert.equal(fs.readFileSync(skill, "utf8"), "user skill\n");
+    if (scenario !== "user CLAUDE.md" && scenario !== "fresh") assert.equal(fs.existsSync(skill), true);
   });
 }
 
@@ -1448,7 +1507,7 @@ for (const scenario of ["valid", "mismatch", "missing", "unlisted"]) {
         res.end();
         return;
       }
-      res.writeHead(200, { "Content-Type": "text/plain" });
+      res.writeHead(200, { "Content-Type": scenario === "valid" ? "application/octet-stream" : "text/plain" });
       res.end(`${scenario === "mismatch" ? "0".repeat(64) : hash}  ${scenario === "unlisted" ? "other.exe" : "wrapper.exe"}\n`);
     });
     t.after(() => new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve())));

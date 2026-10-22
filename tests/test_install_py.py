@@ -48,7 +48,7 @@ class InstallerJsonTests(unittest.TestCase):
 
     def test_default_configs_install_codeagent_dependency_safely(self):
         config = json.loads((ROOT / "config.json").read_text(encoding="utf-8-sig"))
-        for scenario in ("fresh", "matching CLAUDE.md", "user CLAUDE.md", "existing skill"):
+        for scenario in ("fresh", "opt-in", "matching CLAUDE.md", "user CLAUDE.md", "existing skill"):
             with self.subTest(scenario=scenario), tempfile.TemporaryDirectory() as temporary:
                 install_dir = Path(temporary).resolve()
                 ctx = {**self.ctx, "install_dir": install_dir, "config_dir": ROOT,
@@ -62,6 +62,7 @@ class InstallerJsonTests(unittest.TestCase):
                 if scenario == "existing skill":
                     skill.parent.mkdir(parents=True)
                     skill.write_bytes(b"user skill\n")
+                ctx["with_claude_md"] = scenario == "opt-in"
                 result = installer.execute_module("harness", config["modules"]["harness"], ctx)
                 self.assertEqual(result["status"], "success")
                 with contextlib.redirect_stdout(io.StringIO()) as output:
@@ -69,16 +70,21 @@ class InstallerJsonTests(unittest.TestCase):
                 if scenario == "user CLAUDE.md":
                     self.assertEqual(claude.read_bytes(), b"user instructions\n")
                     self.assertFalse(skill.exists())
-                else:
+                elif scenario in ("opt-in", "matching CLAUDE.md"):
                     self.assertEqual(claude.read_bytes(), (ROOT / "memorys/CLAUDE.md").read_bytes())
                     expected = b"user skill\n" if scenario == "existing skill" else (ROOT / "skills/codeagent/SKILL.md").read_bytes()
                     self.assertEqual(skill.read_bytes(), expected)
                 self.assertEqual("Installed codeagent skill (required by CLAUDE.md)" in output.getvalue(),
-                                 scenario in ("fresh", "matching CLAUDE.md"))
+                                 scenario in ("opt-in", "matching CLAUDE.md"))
                 result = installer.uninstall_module("harness", config["modules"]["harness"], ctx)
                 self.assertEqual(result["status"], "success")
-                if scenario != "user CLAUDE.md":
+                if scenario in ("opt-in", "matching CLAUDE.md"):
                     self.assertTrue(skill.exists())
+                elif scenario == "fresh":
+                    self.assertFalse(claude.exists())
+                    self.assertFalse(skill.exists())
+                elif scenario == "existing skill":
+                    self.assertEqual(skill.read_bytes(), b"user skill\n")
 
     def test_wrapper_path_is_platform_specific(self):
         with mock.patch.object(installer.sys, "platform", "win32"), mock.patch.dict(
