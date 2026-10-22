@@ -231,7 +231,7 @@ skip-permissions: false
 | 后端 | 执行命令 | 说明 |
 |------|----------|------|
 | `codex` | `codex e ...` | 默认添加 `--dangerously-bypass-approvals-and-sandbox`；设 `CODEX_BYPASS_SANDBOX=false` 关闭 |
-| `claude` | `claude -p ... --output-format stream-json` | 默认跳过权限并禁用 setting-sources 防止递归；设 `CODEAGENT_SKIP_PERMISSIONS=false` 开启权限；自动读取 `~/.claude/settings.json` 中的 env 和 model |
+| `claude` | `claude -p ... --output-format stream-json` | 默认跳过权限；嵌套的 claude 会加载用户的设置、CLAUDE.md 和技能；设 `CODEAGENT_SKIP_PERMISSIONS=false` 开启权限；自动读取 `~/.claude/settings.json` 中的 env 和 model |
 | `gemini` | `gemini -o stream-json -y ...` | 自动从 `~/.gemini/.env` 加载环境变量（GEMINI_API_KEY, GEMINI_MODEL 等） |
 | `opencode` | `opencode run --format json` | — |
 

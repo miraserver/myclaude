@@ -231,7 +231,7 @@ This project does not embed model capabilities. It requires the corresponding CL
 | Backend | Command | Notes |
 |---------|---------|-------|
 | `codex` | `codex e ...` | Adds `--dangerously-bypass-approvals-and-sandbox` by default; set `CODEX_BYPASS_SANDBOX=false` to disable |
-| `claude` | `claude -p ... --output-format stream-json` | Skips permissions and disables setting-sources to prevent recursion; set `CODEAGENT_SKIP_PERMISSIONS=false` to enable prompts; auto-reads env and model from `~/.claude/settings.json` |
+| `claude` | `claude -p ... --output-format stream-json` | Skips permissions; the nested claude loads the user's settings, CLAUDE.md and skills; set `CODEAGENT_SKIP_PERMISSIONS=false` to enable prompts; auto-reads env and model from `~/.claude/settings.json` |
 | `gemini` | `gemini -o stream-json -y ...` | Auto-loads env vars from `~/.gemini/.env` (GEMINI_API_KEY, GEMINI_MODEL, etc.) |
 | `opencode` | `opencode run --format json` | — |
 
