@@ -81,3 +81,10 @@ def test_prompt_home_private(tmp_path):
         log.chmod(0o644)
         run(tmp_path, "log-prompt.py", json.dumps({"prompt": "second"}))
         assert stat.S_IMODE(log.stat().st_mode) == 0o600
+
+
+@pytest.mark.parametrize("encoding", ["cp1251", "cp1252"])
+def test_utf8_payload_under_ansi_stdio(tmp_path, monkeypatch, encoding):
+    monkeypatch.setenv("PYTHONIOENCODING", encoding)
+    payload = json.dumps({"tool_input": {"command": "rm -rf /  # комментарий 😀"}}, ensure_ascii=False)
+    assert run(tmp_path, "pre-bash.py", payload).returncode == 2

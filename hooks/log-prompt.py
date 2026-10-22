@@ -39,7 +39,7 @@ def main():
     input_data = ""
     if not sys.stdin.isatty():
         try:
-            input_data = sys.stdin.read()
+            input_data = sys.stdin.buffer.read().decode("utf-8", errors="replace")
         except Exception:
             pass
 
