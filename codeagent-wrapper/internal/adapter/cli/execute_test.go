@@ -2,6 +2,7 @@ package cli
 
 import (
 	"errors"
+	"strings"
 	"testing"
 
 	config "codeagent-wrapper/internal/config"
@@ -9,6 +10,20 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 )
+
+func TestExecuteModeRejectsParallelWorktree(t *testing.T) {
+	var message string
+	code := ExecuteMode(&cobra.Command{}, nil, nil, &Options{Parallel: true, Worktree: true}, "wrapper", ExecuteDeps{
+		NewViper: func(string) (*viper.Viper, error) { return viper.New(), nil }, LogError: func(s string) { message = s },
+		RunParallel: func(*cobra.Command, []string, *Options, *viper.Viper, string) int {
+			t.Fatal("started parallel worktree execution")
+			return 0
+		},
+	})
+	if code != 1 || !strings.Contains(message, "--worktree") || !strings.Contains(message, "--parallel") {
+		t.Fatalf("code=%d error=%s", code, message)
+	}
+}
 
 func TestExecuteMode_ParallelBranch(t *testing.T) {
 	opts := &Options{ConfigFile: "cfg", Parallel: true}

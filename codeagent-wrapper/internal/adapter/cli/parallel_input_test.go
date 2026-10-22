@@ -63,3 +63,18 @@ func TestBuildParallelInputFallsBackToViper(t *testing.T) {
 		t.Fatalf("BuildParallelInput() = %#v", got)
 	}
 }
+
+func TestParallelPromptFlagOverridesFallback(t *testing.T) {
+	opts := &Options{}
+	cmd := &cobra.Command{}
+	AddRootFlags(cmd.Flags(), opts)
+	if err := cmd.ParseFlags([]string{"--prompt-file", "cli.md"}); err != nil {
+		t.Fatal(err)
+	}
+	v := viper.New()
+	v.Set("prompt-file", "env.md")
+	got, err := BuildParallelInput(cmd, opts, v, ParallelInputDeps{StdinReader: bytes.NewBuffer(nil), DefaultBackendName: "codex", ResolveMaxWorkers: func(*viper.Viper) int { return 1 }})
+	if err != nil || got.PromptFile != "cli.md" || !got.PromptFileOverride {
+		t.Fatalf("%+v %v", got, err)
+	}
+}

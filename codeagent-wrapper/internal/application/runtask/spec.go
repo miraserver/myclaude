@@ -6,23 +6,24 @@ import (
 
 // Spec carries application/runtime execution details for a task.
 type Spec struct {
-	ID              string
-	Task            string
-	Dependencies    []string
-	WorkDir         string
-	SessionID       string
-	Backend         string
-	Model           string
-	ReasoningEffort string
-	Agent           string
-	PromptFile      string
-	Yolo            bool
-	SkipPermissions bool
-	Worktree        bool
-	AllowedTools    []string
-	DisallowedTools []string
-	Skills          []string
-	Mode            string
-	UseStdin        bool
-	Context         context.Context
+	ID                 string
+	Task               string
+	Dependencies       []string
+	WorkDir            string
+	SessionID          string
+	Backend            string
+	Model              string
+	ReasoningEffort    string
+	Agent              string
+	PromptFileExplicit bool
+	PromptFile         string
+	Yolo               bool
+	SkipPermissions    bool
+	Worktree           bool
+	AllowedTools       []string
+	DisallowedTools    []string
+	Skills             []string
+	Mode               string
+	UseStdin           bool
+	Context            context.Context
 }

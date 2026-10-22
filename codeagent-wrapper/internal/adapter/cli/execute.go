@@ -26,6 +26,10 @@ func ExecuteMode(cmd *cobra.Command, args []string, rawArgv []string, opts *Opti
 	}
 
 	if opts.Parallel {
+		if opts.Worktree {
+			deps.LogError("--worktree cannot be combined with --parallel")
+			return 1
+		}
 		return deps.RunParallel(cmd, args, opts, v, name)
 	}
 

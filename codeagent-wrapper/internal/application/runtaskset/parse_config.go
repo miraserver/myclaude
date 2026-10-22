@@ -126,11 +126,13 @@ func ParseConfig(data []byte) (*ParallelConfig, error) {
 			if task.Model == "" && task.Backend == backend {
 				task.Model = model
 			}
-			if task.ReasoningEffort == "" {
+			if task.ReasoningEffort == "" && task.Backend == backend {
 				task.ReasoningEffort = reasoning
 			}
 			task.Yolo = yolo && task.Backend == backend
-			task.PromptFile = promptFile
+			if task.PromptFile == "" {
+				task.PromptFile = promptFile
+			}
 			task.AllowedTools = allowedTools
 			task.DisallowedTools = disallowedTools
 		}

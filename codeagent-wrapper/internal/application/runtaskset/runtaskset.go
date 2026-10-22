@@ -11,6 +11,7 @@ import (
 )
 
 type Plan struct {
+	TaskOrder   []string
 	OutputPath  string
 	SummaryOnly bool
 	Layers      [][]appruntask.Spec
@@ -23,13 +24,16 @@ type ParallelConfig struct {
 }
 
 type BuildInput struct {
-	BackendName     string
-	Model           string
-	OutputPath      string
-	SummaryOnly     bool
-	SkipPermissions bool
-	StdinData       []byte
-	MaxWorkers      int
+	BackendName        string
+	Model              string
+	OutputPath         string
+	SummaryOnly        bool
+	SkipPermissions    bool
+	StdinData          []byte
+	MaxWorkers         int
+	ReasoningEffort    string
+	PromptFileOverride bool // A CLI flag takes priority over agent presets.
+	PromptFile         string
 }
 
 type BuildDeps struct {
@@ -64,6 +68,13 @@ func BuildPlan(input BuildInput, deps BuildDeps) (Plan, error) {
 		if strings.TrimSpace(cfg.Tasks[i].Model) == "" && model != "" && cfg.Tasks[i].Backend == backendName {
 			cfg.Tasks[i].Model = model
 		}
+		if strings.TrimSpace(cfg.Tasks[i].ReasoningEffort) == "" {
+			cfg.Tasks[i].ReasoningEffort = input.ReasoningEffort
+		}
+		if input.PromptFileOverride || strings.TrimSpace(cfg.Tasks[i].PromptFile) == "" {
+			cfg.Tasks[i].PromptFile = input.PromptFile
+			cfg.Tasks[i].PromptFileExplicit = strings.TrimSpace(input.PromptFile) != ""
+		}
 		cfg.Tasks[i].SkipPermissions = cfg.Tasks[i].SkipPermissions || input.SkipPermissions
 	}
 
@@ -91,7 +102,12 @@ func BuildPlan(input BuildInput, deps BuildDeps) (Plan, error) {
 		}
 	}
 
+	order := make([]string, len(cfg.Tasks))
+	for i, task := range cfg.Tasks {
+		order[i] = task.ID
+	}
 	return Plan{
+		TaskOrder:   order,
 		OutputPath:  input.OutputPath,
 		SummaryOnly: input.SummaryOnly,
 		Layers:      layers,
@@ -108,10 +124,28 @@ func RunPlan(parentCtx context.Context, plan Plan, deps RunDeps) (string, int, e
 	}
 
 	exitCode := 0
+	resultByID := make(map[string]domaintask.TaskResult, len(results))
 	for _, res := range results {
-		if res.ExitCode != 0 {
-			exitCode = res.ExitCode
+		resultByID[res.TaskID] = res
+	}
+	order := plan.TaskOrder
+	if len(order) == 0 {
+		for _, layer := range plan.Layers {
+			for _, task := range layer {
+				order = append(order, task.ID)
+			}
 		}
+	}
+	for _, id := range order {
+		res, ok := resultByID[id]
+		if !ok || (res.ExitCode == 0 && res.Error == "") {
+			continue
+		}
+		exitCode = res.ExitCode
+		if exitCode < 1 {
+			exitCode = 1
+		}
+		break
 	}
 
 	return deps.RenderFinalOutputWithMode(results, plan.SummaryOnly), exitCode, nil

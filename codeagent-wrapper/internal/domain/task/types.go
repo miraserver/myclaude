@@ -23,4 +23,6 @@ type TaskResult struct {
 	TestsPassed    int      `json:"tests_passed,omitempty"`
 	TestsFailed    int      `json:"tests_failed,omitempty"`
 	SharedLog      bool     `json:"-"`
+	WorktreePath   string   `json:"worktree_path,omitempty"`
+	WorktreeBranch string   `json:"worktree_branch,omitempty"`
 }

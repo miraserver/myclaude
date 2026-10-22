@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 
+	"codeagent-wrapper/internal/executor"
 	utils "codeagent-wrapper/internal/utils"
 )
 
@@ -30,13 +31,7 @@ func readPipedTask() (string, error) {
 }
 
 func shouldUseStdin(taskText string, piped bool) bool {
-	if piped {
-		return true
-	}
-	if len(taskText) > 800 {
-		return true
-	}
-	return strings.ContainsAny(taskText, stdinSpecialChars)
+	return executor.ShouldUseStdin(taskText, piped)
 }
 
 func defaultIsTerminal() bool {

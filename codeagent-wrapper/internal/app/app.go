@@ -16,7 +16,6 @@ const (
 	defaultWorkdir        = "."
 	defaultCoverageTarget = 90.0
 	codexLogLineLimit     = 1000
-	stdinSpecialChars     = "\n\\\"'`$"
 	stderrCaptureLimit    = 4 * 1024
 	defaultBackendName    = "codex"
 	defaultCodexCommand   = "codex"

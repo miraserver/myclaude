@@ -61,18 +61,29 @@ func BuildParallelInput(cmd *cobra.Command, opts *Options, v *viper.Viper, deps 
 		skipPermissions = v.GetBool("skip-permissions")
 	}
 
+	promptFile := strings.TrimSpace(v.GetString("prompt-file"))
+	if cmd.Flags().Changed("prompt-file") {
+		promptFile = strings.TrimSpace(opts.PromptFile)
+		if promptFile == "" {
+			return runtaskset.BuildInput{}, fmt.Errorf("--prompt-file flag requires a value")
+		}
+	}
+
 	data, err := io.ReadAll(deps.StdinReader)
 	if err != nil {
 		return runtaskset.BuildInput{}, fmt.Errorf("failed to read stdin: %w", err)
 	}
 
 	return runtaskset.BuildInput{
-		BackendName:     backendName,
-		Model:           model,
-		OutputPath:      outputPath,
-		SummaryOnly:     summaryOnly,
-		SkipPermissions: skipPermissions,
-		StdinData:       data,
-		MaxWorkers:      deps.ResolveMaxWorkers(v),
+		BackendName:        backendName,
+		Model:              model,
+		OutputPath:         outputPath,
+		SummaryOnly:        summaryOnly,
+		SkipPermissions:    skipPermissions,
+		StdinData:          data,
+		MaxWorkers:         deps.ResolveMaxWorkers(v),
+		ReasoningEffort:    strings.TrimSpace(v.GetString("reasoning-effort")),
+		PromptFile:         promptFile,
+		PromptFileOverride: cmd.Flags().Changed("prompt-file"),
 	}, nil
 }

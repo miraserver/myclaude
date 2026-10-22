@@ -77,6 +77,8 @@ Explicit stdin (using `-`):
 cat task.txt | codeagent-wrapper -
 ```
 
+Tasks beginning with `-` are sent through stdin automatically. In single-task mode, use `codeagent-wrapper -- "- task"` to pass such text as the task, or use stdin with `-`. To run a task whose text is exactly `cleanup` or `version`, pass it through stdin with `-`; those names are reserved subcommands.
+
 HEREDOC (recommended for multi-line tasks):
 
 ```bash
@@ -260,7 +262,7 @@ make clean    # Clean build artifacts
 make install  # Install to $GOPATH/bin
 ```
 
-CI uses GitHub Actions with Go 1.21 / 1.22 matrix testing.
+CI uses GitHub Actions with Go 1.26 across Ubuntu, macOS, and Windows, as configured in the root `.github/workflows/ci.yml`.
 
 ## Troubleshooting
 
@@ -269,3 +271,10 @@ CI uses GitHub Actions with Go 1.21 / 1.22 matrix testing.
 - `gemini` backend's API key is loaded from `~/.gemini/.env`, injected as `GEMINI_API_KEY` with `GEMINI_API_KEY_AUTH_MECHANISM=bearer` auto-set
 - Exit codes: 127 = backend not found, 130 = interrupted; the wrapper has no execution timeout
 - Parallel mode outputs structured summary by default; use `--full-output` for complete output when debugging
+
+
+## Execution behavior
+
+Worktrees are retained with your changes; results show `Worktree: <path> (branch do/<id>)`. `--worktree` cannot be combined with `--parallel`; use `worktree: true` in each parallel task instead.
+
+Settings priority is explicit CLI flag (or parallel task field), then a matching-backend agent preset, then environment, then config file. Invalid `CODEAGENT_MAX_PARALLEL_WORKERS` values, including whitespace or leading zeros, use the default of 10. Parallel exit status comes from the first failed task in definition order. On Windows, `.cmd`/`.bat` backends reject remaining arguments containing `& | < > ^ % ! "`; put task text through stdin.

@@ -260,7 +260,7 @@ make clean    # 清理构建产物
 make install  # 安装到 $GOPATH/bin
 ```
 
-CI 使用 GitHub Actions，Go 1.21 / 1.22 矩阵测试。
+CI 使用 GitHub Actions，按根目录 `.github/workflows/ci.yml` 配置，使用 Go 1.26 在 Ubuntu、macOS 和 Windows 上测试。
 
 ## 故障排查
 
@@ -269,3 +269,10 @@ CI 使用 GitHub Actions，Go 1.21 / 1.22 矩阵测试。
 - `gemini` 后端的 API key 从 `~/.gemini/.env` 加载，注入 `GEMINI_API_KEY` 并自动设置 `GEMINI_API_KEY_AUTH_MECHANISM=bearer`
 - 后端命令未找到时返回退出码 127，中断返回 130；包装器没有执行超时
 - 并行模式默认输出结构化摘要，使用 `--full-output` 查看完整输出以便调试
+
+
+## 执行行为
+
+以 `-` 开头的任务自动通过 stdin 发送；单任务可使用 `codeagent-wrapper -- "- task"` 或 stdin `-`。任务文本恰好为 `cleanup` 或 `version` 时，必须使用 stdin `-`，因为它们是保留子命令。
+
+Worktree 会保留更改，结果显示路径和分支。`--worktree` 不能与 `--parallel` 同用；请在并行任务中设置 `worktree: true`。设置优先级：显式 CLI 参数（或并行任务字段）> 后端匹配的 agent 预设 > 环境变量 > 配置文件。无效 worker 值（包括空白或前导零）使用默认值 10。并行退出码取任务定义顺序中首个失败任务的退出码。Windows `.cmd`/`.bat` 后端会拒绝剩余参数中的 `& | < > ^ % ! "`；任务文本通过 stdin 传入。

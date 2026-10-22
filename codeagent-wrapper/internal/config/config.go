@@ -106,8 +106,11 @@ func NormalizeMaxParallelWorkers(value int) int {
 // ResolveMaxParallelWorkers reads CODEAGENT_MAX_PARALLEL_WORKERS. It returns 0
 // for "unlimited".
 func ResolveMaxParallelWorkers() int {
-	raw := strings.TrimSpace(os.Getenv("CODEAGENT_MAX_PARALLEL_WORKERS"))
+	raw := os.Getenv("CODEAGENT_MAX_PARALLEL_WORKERS")
 	if raw == "" {
+		return DefaultMaxParallelWorkers
+	}
+	if strings.TrimSpace(raw) != raw || (len(raw) > 1 && raw[0] == '0') {
 		return DefaultMaxParallelWorkers
 	}
 

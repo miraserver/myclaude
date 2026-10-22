@@ -69,19 +69,6 @@ func BuildSingleConfig(cmd *cobra.Command, args []string, rawArgv []string, opts
 		yolo = resolvedYolo
 	}
 
-	if cmd.Flags().Changed("prompt-file") {
-		promptFile = strings.TrimSpace(opts.PromptFile)
-		if promptFile == "" {
-			return nil, fmt.Errorf("--prompt-file flag requires a value")
-		}
-		promptFileExplicit = true
-	} else if val := strings.TrimSpace(v.GetString("prompt-file")); val != "" {
-		promptFile = val
-		promptFileExplicit = true
-	} else {
-		promptFile = resolvedPromptFile
-	}
-
 	if cmd.Flags().Changed("output") {
 		outputPath = strings.TrimSpace(opts.Output)
 		if outputPath == "" {
@@ -91,7 +78,6 @@ func BuildSingleConfig(cmd *cobra.Command, args []string, rawArgv []string, opts
 		outputPath = val
 	}
 
-	agentFlagChanged := cmd.Flags().Changed("agent")
 	backendFlagChanged := cmd.Flags().Changed("backend")
 	if backendFlagChanged {
 		backendName = strings.TrimSpace(opts.Backend)
@@ -101,8 +87,6 @@ func BuildSingleConfig(cmd *cobra.Command, args []string, rawArgv []string, opts
 	}
 
 	switch {
-	case agentFlagChanged && backendFlagChanged && LastFlagIndex(rawArgv, "agent") > LastFlagIndex(rawArgv, "backend"):
-		backendName = resolvedBackend
 	case !backendFlagChanged && agentName != "":
 		backendName = resolvedBackend
 	case !backendFlagChanged:
@@ -122,11 +106,9 @@ func BuildSingleConfig(cmd *cobra.Command, args []string, rawArgv []string, opts
 	}
 
 	switch {
-	case agentFlagChanged && modelFlagChanged && LastFlagIndex(rawArgv, "agent") > LastFlagIndex(rawArgv, "model"):
+	case !modelFlagChanged && agentName != "" && backendName == resolvedBackend && strings.TrimSpace(resolvedModel) != "":
 		model = strings.TrimSpace(resolvedModel)
-	case !modelFlagChanged && agentName != "" && backendName == resolvedBackend:
-		model = strings.TrimSpace(resolvedModel)
-	case !modelFlagChanged && agentName == "":
+	case !modelFlagChanged:
 		model = strings.TrimSpace(v.GetString("model"))
 	}
 
@@ -135,10 +117,23 @@ func BuildSingleConfig(cmd *cobra.Command, args []string, rawArgv []string, opts
 		if reasoningEffort == "" {
 			return nil, fmt.Errorf("--reasoning-effort flag requires a value")
 		}
+	} else if agentName != "" && backendName == resolvedBackend && strings.TrimSpace(resolvedReasoning) != "" {
+		reasoningEffort = strings.TrimSpace(resolvedReasoning)
 	} else if val := strings.TrimSpace(v.GetString("reasoning-effort")); val != "" {
 		reasoningEffort = val
-	} else if agentName != "" {
-		reasoningEffort = strings.TrimSpace(resolvedReasoning)
+	}
+
+	if cmd.Flags().Changed("prompt-file") {
+		promptFile = strings.TrimSpace(opts.PromptFile)
+		if promptFile == "" {
+			return nil, fmt.Errorf("--prompt-file flag requires a value")
+		}
+		promptFileExplicit = true
+	} else if agentName != "" && strings.TrimSpace(resolvedPromptFile) != "" {
+		promptFile = resolvedPromptFile
+	} else if val := strings.TrimSpace(v.GetString("prompt-file")); val != "" {
+		promptFile = val
+		promptFileExplicit = true
 	}
 
 	skipChanged := cmd.Flags().Changed("skip-permissions") || cmd.Flags().Changed("dangerously-skip-permissions")

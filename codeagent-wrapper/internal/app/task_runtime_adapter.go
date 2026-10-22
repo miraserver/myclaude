@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"os"
 	"strconv"
 	"strings"
 
@@ -129,6 +130,9 @@ func enrichTaskResults(results []domaintask.TaskResult) {
 }
 
 func resolveConfiguredMaxParallelWorkers(v *viper.Viper) int {
+	if _, ok := os.LookupEnv("CODEAGENT_MAX_PARALLEL_WORKERS"); ok {
+		return config.ResolveMaxParallelWorkers()
+	}
 	if v == nil || !v.IsSet("max-parallel-workers") {
 		return config.ResolveMaxParallelWorkers()
 	}

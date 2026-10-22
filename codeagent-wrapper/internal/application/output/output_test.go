@@ -10,6 +10,15 @@ import (
 	domaintask "codeagent-wrapper/internal/domain/task"
 )
 
+func TestSingleTaskReportsRetainedWorktreeEvenOnFailure(t *testing.T) {
+	for _, message := range []string{"done", ""} {
+		output, err := FinalizeSingleTask("codex", "", domaintask.TaskResult{ExitCode: 1, Message: message, WorktreePath: "repo/tree", WorktreeBranch: "do/task"})
+		if err != nil || !strings.Contains(output.Stdout, "Worktree: repo/tree (branch do/task)") {
+			t.Fatalf("output=%+v err=%v", output, err)
+		}
+	}
+}
+
 func TestRenderSingleTaskBanner(t *testing.T) {
 	var stderr bytes.Buffer
 
@@ -92,5 +101,13 @@ func TestEmit(t *testing.T) {
 
 	if got := stdout.String(); got != "summary\n" {
 		t.Fatalf("stdout = %q, want %q", got, "summary\n")
+	}
+}
+
+func TestWorktreeOutputSanitized(t *testing.T) {
+	result := domaintask.TaskResult{Message: "done", WorktreePath: "\x1b[31mrepo/tree\x1b[0m\x00", WorktreeBranch: "do/task\r"}
+	output, err := FinalizeSingleTask("codex", "", result)
+	if err != nil || !strings.Contains(output.Stdout, "Worktree: repo/tree (branch do/task)") || strings.ContainsAny(output.Stdout, "\x1b\x00\r") {
+		t.Fatalf("%+v %v", output, err)
 	}
 }

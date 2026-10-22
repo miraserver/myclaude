@@ -19,7 +19,7 @@ npx github:miraserver/myclaude
 
 # Manual build (optional; requires repo checkout)
 cd codeagent-wrapper
-go build -o ~/.claude/bin/codeagent-wrapper
+go build -o ~/.claude/bin/codeagent-wrapper ./cmd/codeagent-wrapper
 ```
 
 ## Quick Start
@@ -439,6 +439,12 @@ dependencies: api_1701234567, ui_1701234568
 add E2E tests for notification flow
 EOF
 ```
+
+## Execution behavior
+
+For tasks beginning with `-`, use `codeagent-wrapper -- "- task"` or stdin `-`; these tasks automatically use backend stdin. For literal `cleanup` or `version` tasks, use stdin `-` because these are subcommands. Worktrees are retained, and results show the path and branch. Use per-task `worktree: true` in parallel mode; `--worktree --parallel` is rejected.
+
+Settings resolve as explicit CLI flag (or parallel task field) > matching-backend agent preset > environment > config file. Invalid worker environment values (including whitespace and leading zeros) use 10. Parallel exit status follows the first failed task in definition order. Windows `.cmd`/`.bat` backends reject remaining argv containing `& | < > ^ % ! "`; task text is routed through stdin.
 
 ## Further Reading
 

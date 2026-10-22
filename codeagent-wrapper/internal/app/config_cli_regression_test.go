@@ -100,7 +100,7 @@ func TestConfigCLIRegressions(t *testing.T) {
 			t.Fatalf("accepted %s", path)
 		}
 	}
-	for raw, want := range map[string]int{"abc": 10, "8 ": 8, "010": 10} {
+	for raw, want := range map[string]int{"abc": 10, "8 ": 10, "010": 10} {
 		t.Setenv("CODEAGENT_MAX_PARALLEL_WORKERS", raw)
 		v := viper.New()
 		v.Set("max-parallel-workers", raw)

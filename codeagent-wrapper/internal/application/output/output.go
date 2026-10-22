@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	domaintask "codeagent-wrapper/internal/domain/task"
+	"codeagent-wrapper/internal/utils"
 
 	"github.com/goccy/go-json"
 )
@@ -121,15 +122,31 @@ func summarizeResults(results []domaintask.TaskResult) Summary {
 }
 
 func renderSingleTaskMessage(result domaintask.TaskResult) string {
-	if strings.TrimSpace(result.Message) == "" {
+	if strings.TrimSpace(result.Message) == "" && result.WorktreePath == "" {
 		return ""
 	}
 
 	var b strings.Builder
 	b.WriteString(result.Message)
+	if worktree := RenderWorktree(result); worktree != "" {
+		b.WriteString("\n\n")
+		b.WriteString(worktree)
+	}
 	if result.SessionID != "" {
 		b.WriteString("\n\n---\nSESSION_ID: ")
 		b.WriteString(result.SessionID)
 	}
 	return b.String()
+}
+
+// RenderWorktree formats retained worktree details for all text output modes.
+func RenderWorktree(result domaintask.TaskResult) string {
+	if result.WorktreePath == "" {
+		return ""
+	}
+	text := "Worktree: " + utils.SanitizeOutput(result.WorktreePath)
+	if result.WorktreeBranch != "" {
+		text += " (branch " + utils.SanitizeOutput(result.WorktreeBranch) + ")"
+	}
+	return text
 }

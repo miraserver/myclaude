@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"runtime"
 	"sort"
 	"strings"
@@ -15,6 +16,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	appoutput "codeagent-wrapper/internal/application/output"
 	backend "codeagent-wrapper/internal/backend"
 	config "codeagent-wrapper/internal/config"
 	ilogger "codeagent-wrapper/internal/logger"
@@ -461,7 +463,7 @@ func DefaultRunCodexTaskFn(task TaskSpec, timeout int) TaskResult {
 		task.Mode = "new"
 	}
 	if strings.TrimSpace(task.PromptFile) != "" {
-		prompt, err := ReadAgentPromptFile(task.PromptFile, false)
+		prompt, err := ReadAgentPromptFile(task.PromptFile, task.PromptFileExplicit)
 		if err != nil {
 			return TaskResult{TaskID: task.ID, ExitCode: 1, Error: "failed to read prompt file: " + err.Error()}
 		}
@@ -827,6 +829,10 @@ func GenerateFinalOutputWithMode(results []TaskResult, summaryOnly bool) string 
 					sb.WriteString(fmt.Sprintf("Log: %s\n", logPath))
 				}
 			}
+			if worktree := appoutput.RenderWorktree(res); worktree != "" {
+				sb.WriteString(worktree)
+				sb.WriteString("\n")
+			}
 		}
 
 		// Summary section
@@ -885,6 +891,10 @@ func GenerateFinalOutputWithMode(results []TaskResult, summaryOnly bool) string 
 			if res.SessionID != "" {
 				sb.WriteString(fmt.Sprintf("Session: %s\n", sanitizeOutput(res.SessionID)))
 			}
+			if worktree := appoutput.RenderWorktree(res); worktree != "" {
+				sb.WriteString(worktree)
+				sb.WriteString("\n")
+			}
 			if res.LogPath != "" {
 				logPath := sanitizeOutput(res.LogPath)
 				if res.SharedLog {
@@ -893,6 +903,7 @@ func GenerateFinalOutputWithMode(results []TaskResult, summaryOnly bool) string 
 					sb.WriteString(fmt.Sprintf("Log: %s\n", logPath))
 				}
 			}
+
 			if res.Message != "" {
 				message := sanitizeOutput(res.Message)
 				if message != "" {
@@ -995,6 +1006,8 @@ func RunCodexTaskWithContext(parentCtx context.Context, taskSpec TaskSpec, backe
 			cfg.WorkDir = paths.Dir
 		}
 		logInfo(fmt.Sprintf("Using worktree: %s (task_id: %s, branch: %s)", paths.Dir, paths.TaskID, paths.Branch))
+		result.WorktreePath = paths.Dir
+		result.WorktreeBranch = paths.Branch
 	}
 
 	var fileEnv map[string]string
@@ -1109,6 +1122,21 @@ func RunCodexTaskWithContext(parentCtx context.Context, taskSpec TaskSpec, backe
 
 	attachStderr := func(msg string) string {
 		return fmt.Sprintf("%s; stderr: %s", msg, stderrBuf.String())
+	}
+
+	if runtime.GOOS == "windows" {
+		if resolved, err := exec.LookPath(commandName); err == nil {
+			ext := strings.ToLower(filepath.Ext(resolved))
+			if ext == ".cmd" || ext == ".bat" {
+				for i, arg := range codexArgs {
+					if strings.ContainsAny(arg, "&|<>^%!\"") {
+						result.ExitCode = 1
+						result.Error = fmt.Sprintf("unsafe Windows command argument %d (%q) for %s shim", i+1, arg, ext)
+						return result
+					}
+				}
+			}
+		}
 	}
 
 	cmd := newCommandRunner(ctx, commandName, codexArgs...)
@@ -1409,6 +1437,9 @@ waitLoop:
 	if waitErr != nil {
 		if exitErr, ok := waitErr.(*exec.ExitError); ok {
 			code := exitErr.ExitCode()
+			if code < 0 {
+				code = 1
+			}
 			logErrorFn(fmt.Sprintf("%s exited with status %d", commandName, code))
 			result.ExitCode = code
 			result.Error = attachStderr(fmt.Sprintf("%s exited with status %d", commandName, code))
