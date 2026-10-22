@@ -127,6 +127,8 @@ Manual exit: Edit `task.md` and set `status: "cancelled"` in the frontmatter; ca
 
 Set `verify_command` with `setup-do.py --verify "<cmd>"` or the project default in `.claude/do.json`; change it later with `task.py set-verify "<cmd>"`. Tasks bind to the session that first stops. At the maximum phase, the Stop hook runs verification, blocks up to five times with failing output, and marks completed on success. Abandon with `task.py finish`.
 
+Task creation and `set-verify` store the authoritative `verify_command` in the user-local `~/.claude/do-state/registry.json` (`~` is Python's `Path.home()`), keyed by resolved project directory and task directory name. The command in `task.md` is informational; the Stop hook only gates and binds registered tasks and only executes the registry command. Missing or corrupt registries are treated as empty with a warning. Tasks created by older versions are not gated: re-run `task.py set-verify "<cmd>"` or recreate the task to register them.
+
 On a `verify_failed` task, `set-verify` returns the task to `in_progress` with a fresh verification attempt budget. `DO_VERIFY_TIMEOUT` sets the verification timeout in seconds (default 1500; invalid or nonpositive values use the default, and values above 1740 are clamped to 1740); on timeout the hook kills the command's process tree, waits up to five more seconds for it to exit, and reads captured output from a temporary file. Installing or uninstalling updates only this skill's installed Stop hook path and preserves unrelated hooks.
 
 ## Parallel Execution Examples

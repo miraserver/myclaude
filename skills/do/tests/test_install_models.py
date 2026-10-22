@@ -21,7 +21,8 @@ class DoModelsTests(unittest.TestCase):
         self.addCleanup(temporary.cleanup)
         self.home = Path(temporary.name)
         for patcher in (mock.patch.object(installer.Path, "home", return_value=self.home),
-                        mock.patch.dict(os.environ, {"HOME": str(self.home), "USERPROFILE": str(self.home)})):
+                        mock.patch.dict(os.environ, {"HOME": str(self.home), "USERPROFILE": str(self.home),
+                                                    "CLAUDE_PROJECT_DIR": str(self.home)})):
             patcher.start()
             self.addCleanup(patcher.stop)
         self.path = self.home / ".codeagent/models.json"

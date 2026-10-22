@@ -15,7 +15,7 @@ MAX_BLOCKS = 5
 
 try:
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
-    from task import DIR_TASKS, PHASE_NAMES, STATE_FILE, load_task, save_task
+    from task import DIR_TASKS, PHASE_NAMES, STATE_FILE, load_task, registered_task, save_task
 except Exception as error:
     IMPORT_ERROR = error
 else:
@@ -161,16 +161,28 @@ def run_verification(command: str, directory: str) -> tuple[int | str, str]:
     return proc.returncode, output
 
 
-def verify_task(loaded: tuple, project_dir: str, state_path: str, state: dict) -> None:
+def verify_task(loaded: tuple, project_dir: str, state_path: str, state: dict, command: str) -> None:
     """Complete successful tasks or bound the verification repair loop."""
     task_md_path, frontmatter, body = loaded
-    command = nonempty_string(frontmatter.get("verify_command"))
+    command = nonempty_string(command)
     if not command:
         frontmatter["status"] = "completed"
         save_task(task_md_path, frontmatter, body)
         return
     worktree_dir = nonempty_string(frontmatter.get("worktree_dir"))
     directory = worktree_dir if os.path.isdir(worktree_dir) else project_dir
+    if directory == worktree_dir:
+        try:
+            result = subprocess.run(
+                ["git", "-C", project_dir, "rev-parse", "--show-toplevel"],
+                capture_output=True, text=True, check=True,
+            )
+            relative = Path(project_dir).resolve().relative_to(Path(result.stdout.strip()).resolve())
+            subdirectory = Path(worktree_dir) / relative
+            if subdirectory.is_dir():
+                directory = str(subdirectory)
+        except (subprocess.CalledProcessError, OSError, ValueError):
+            pass
     exit_code, output = run_verification(command, directory)
     if exit_code == 0:
         frontmatter["status"] = "completed"
@@ -207,6 +219,9 @@ def main() -> None:
     if not loaded:
         return
     task_md_path, frontmatter, body = loaded
+    registration = registered_task(project_dir, task_md_path)
+    if registration is None:
+        return
     if frontmatter.get("status") in ("completed", "verify_failed", "cancelled"):
         return
     session_id = nonempty_string(payload.get("session_id"))
@@ -223,7 +238,7 @@ def main() -> None:
     if int(current_phase) < int(frontmatter.get("max_phases", 5)):
         block_incomplete(frontmatter, state_path, state)
         return
-    verify_task(loaded, project_dir, state_path, state)
+    verify_task(loaded, project_dir, state_path, state, registration["verify_command"])
 
 
 def report_error(error: Exception) -> None:

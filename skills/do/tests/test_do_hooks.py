@@ -23,6 +23,10 @@ SETUP = ROOT / "scripts" / "setup-do.py"
 sys.path.insert(0, str(SCRIPTS))
 import task
 
+HOOK_SPEC = importlib.util.spec_from_file_location("do_stop_hook", HOOK)
+stop_hook = importlib.util.module_from_spec(HOOK_SPEC)
+HOOK_SPEC.loader.exec_module(stop_hook)
+
 
 def python_command(code):
     encoded = base64.b64encode(code.encode("utf-8")).decode("ascii")
@@ -36,8 +40,13 @@ class DoHookTests(unittest.TestCase):
     def setUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()
         self.project = Path(self.temp_dir.name)
+        self.home = self.project / "isolated-home"
+        self.home.mkdir()
         (self.project / ".claude").mkdir()
-        project_patcher = patch.dict(os.environ, {"CLAUDE_PROJECT_DIR": str(self.project)})
+        project_patcher = patch.dict(os.environ, {
+            "CLAUDE_PROJECT_DIR": str(self.project),
+            "HOME": str(self.home), "USERPROFILE": str(self.home),
+        })
         project_patcher.start()
         self.addCleanup(project_patcher.stop)
         self.environment = os.environ.copy()
@@ -77,6 +86,8 @@ class DoHookTests(unittest.TestCase):
         return self.project / relative
 
     def _set_task(self, **values):
+        if "verify_command" in values:
+            self.assertTrue(task.set_verify(values["verify_command"]))
         frontmatter, body = self._read_task()
         frontmatter.update(values)
         self._write_task(frontmatter, body)
@@ -625,6 +636,129 @@ class DoHookTests(unittest.TestCase):
         )
         self._stop_json()
         self.assertEqual(Path(output_file.read_text(encoding="utf-8")).resolve(), worktree.resolve())
+
+    def test_worktree_falls_back_when_project_is_not_a_git_repo(self):
+        worktree = self.project / "worktree"
+        worktree.mkdir()
+        project = self.project / "not-a-repository"
+        project.mkdir()
+        loaded = (str(self.project / "task.md"), {"worktree_dir": str(worktree)}, "")
+        with patch.object(stop_hook.subprocess, "run", side_effect=subprocess.CalledProcessError(128, "git")), \
+                patch.object(stop_hook, "run_verification", return_value=(0, "")) as verify, \
+                patch.object(stop_hook, "save_task"), patch.object(stop_hook, "save_state"):
+            stop_hook.verify_task(loaded, str(project), str(self.project / "state.json"),
+                                  {"blocks": 0}, "true")
+        self.assertEqual(verify.call_args.args[1], str(worktree))
+
+    def test_unregistered_repo_task_is_ignored_without_binding_or_execution(self):
+        directory = self.project / task.DIR_TASKS / "crafted"
+        directory.mkdir(parents=True)
+        Path(task.get_current_task_file(str(self.project))).write_text(
+            str(directory.relative_to(self.project)), encoding="utf-8")
+        command = python_command("from pathlib import Path;Path('untrusted-command').touch()")
+        for phase in (1, 5):
+            with self.subTest(phase=phase):
+                self._write_task({"current_phase": phase, "max_phases": 5,
+                                  "verify_command": command, "status": "in_progress",
+                                  "session_id": ""}, "untrusted body", directory)
+                before = (directory / "task.md").read_bytes()
+                result = self._stop()
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(result.stdout, "")
+                self.assertEqual((directory / "task.md").read_bytes(), before)
+                self.assertFalse((self.project / "untrusted-command").exists())
+                self.assertFalse((self.project / task.DIR_TASKS / task.STATE_FILE).exists())
+
+    def test_registry_command_overrides_repo_frontmatter(self):
+        self._create_task()
+        trusted = python_command("from pathlib import Path;Path('trusted-command').touch()")
+        self.assertTrue(task.set_verify(trusted))
+        frontmatter, body = self._read_task()
+        frontmatter.update(current_phase=5, verify_command=python_command(
+            "from pathlib import Path;Path('untrusted-command').touch()"))
+        self._write_task(frontmatter, body)
+        result = self._stop()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, "")
+        self.assertTrue((self.project / "trusted-command").is_file())
+        self.assertFalse((self.project / "untrusted-command").exists())
+        self.assertEqual(self._read_task()[0]["status"], "completed")
+
+    def test_corrupt_registry_ignores_task_and_set_verify_repairs_it(self):
+        self._create_task()
+        self._set_task(current_phase=5, verify_command=python_command(
+            "from pathlib import Path;Path('registered-command').touch()"))
+        before = self._read_task()
+        for content in ("{broken", "[]", "null", '{"project": []}',
+                        '{"project": {"task": {"verify_command": 42}}}'):
+            with self.subTest(content=content):
+                task.registry_path().write_text(content, encoding="utf-8")
+                result = self._stop()
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(result.stdout, "")
+                self.assertIn("Warning", result.stderr)
+                self.assertEqual(self._read_task(), before)
+                self.assertFalse((self.project / "registered-command").exists())
+        self.assertTrue(task.set_verify(before[0]["verify_command"]))
+        self.assertEqual(self._stop().returncode, 0)
+        self.assertTrue((self.project / "registered-command").is_file())
+
+    def test_registry_is_user_local_and_scoped_to_resolved_project(self):
+        directory = self._create_task()
+        registry = json.loads(task.registry_path().read_text(encoding="utf-8"))
+        self.assertEqual(task.registry_path(), self.home / ".claude/do-state/registry.json")
+        self.assertEqual(registry[str(self.project.resolve())][directory.name], {
+            "verify_command": "", "created_at": self._read_task()[0]["created_at"],
+        })
+        self.assertIsNotNone(task.registered_task(str(self.project / ".claude" / ".."),
+                                                str(directory / "task.md")))
+        other = self.project / "other-project"
+        shutil.copytree(self.project / ".claude/do-tasks", other / ".claude/do-tasks")
+        result = self._stop(environment={"CLAUDE_PROJECT_DIR": str(other)})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, "")
+        self.assertEqual(task.read_task_md(str(other / directory.relative_to(self.project) / "task.md"))
+                         ["frontmatter"]["session_id"], "")
+
+    def test_registry_write_uses_atomic_replace_and_preserves_previous_on_failure(self):
+        self._create_task()
+        before = task.registry_path().read_bytes()
+        with patch.object(task.os, "replace", side_effect=OSError("replace failed")) as replace:
+            self.assertFalse(task.set_verify("echo changed"))
+        replace.assert_called_once()
+        source, destination = replace.call_args.args
+        self.assertEqual(source.parent, task.registry_path().parent)
+        self.assertEqual(destination, task.registry_path())
+        self.assertFalse(source.exists())
+        self.assertEqual(task.registry_path().read_bytes(), before)
+
+    def test_stop_verifies_in_worktree_project_subdirectory(self):
+        git_root = self.project
+        project = git_root / "pkg" / "app"
+        project.mkdir(parents=True)
+        (project / "tracked.txt").write_text("tracked", encoding="utf-8")
+        for args in (["add", "pkg/app/tracked.txt"],
+                     ["-c", "user.name=Do Test", "-c", "user.email=do@example.test",
+                      "-c", "commit.gpgsign=false", "commit", "-m", "nested project"]):
+            subprocess.run(["git", *args], cwd=git_root, env=self.environment,
+                           capture_output=True, text=True, check=True)
+        self.project = project
+        self.environment["CLAUDE_PROJECT_DIR"] = str(project)
+        with patch.dict(os.environ, {"CLAUDE_PROJECT_DIR": str(project)}):
+            self._create_task()
+            self._set_task(current_phase=5, verify_command=python_command(
+                "from pathlib import Path;Path('verify-cwd.txt').write_text(str(Path.cwd()))"))
+            attached = self._task_cli("worktree")
+            self.assertEqual(attached.returncode, 0, attached.stderr)
+            worktree = Path(self._read_task()[0]["worktree_dir"])
+            result = self._stop()
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stdout, "")
+            expected = worktree / "pkg" / "app"
+            self.assertEqual(Path((expected / "verify-cwd.txt").read_text()).resolve(),
+                             expected.resolve())
+            self.assertFalse((worktree / "verify-cwd.txt").exists())
+            self.assertFalse((project / "verify-cwd.txt").exists())
 
     def test_attach_worktree_preserves_task_and_is_idempotent(self):
         current = self._create_task()

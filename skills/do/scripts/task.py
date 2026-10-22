@@ -23,6 +23,7 @@ import re
 import string
 import subprocess
 import sys
+import tempfile
 from datetime import datetime
 from pathlib import Path
 
@@ -39,6 +40,64 @@ PHASE_NAMES = {
     4: "Implement",
     5: "Complete",
 }
+
+
+def registry_path() -> Path:
+    return Path.home() / ".claude" / "do-state" / "registry.json"
+
+
+def load_registry() -> dict:
+    """Fail closed for missing or malformed user-local authorization."""
+    try:
+        registry = json.loads(registry_path().read_text(encoding="utf-8"))
+        if not isinstance(registry, dict):
+            raise ValueError("expected an object")
+        for tasks in registry.values():
+            if not isinstance(tasks, dict):
+                raise ValueError("expected task objects")
+            for entry in tasks.values():
+                if (not isinstance(entry, dict)
+                        or not isinstance(entry.get("verify_command"), str)
+                        or not isinstance(entry.get("created_at"), str)):
+                    raise ValueError("invalid task entry")
+        return registry
+    except (OSError, ValueError) as error:
+        print(f"Warning: Cannot read do registry; treating as empty: {error}", file=sys.stderr)
+        return {}
+
+
+def registered_task(project_root: str, task_md_path: str) -> dict | None:
+    """Only authorize a direct task directory in this resolved project."""
+    project = Path(project_root).resolve()
+    directory = Path(task_md_path).resolve().parent
+    if directory.parent != (project / DIR_TASKS).resolve():
+        return None
+    return load_registry().get(str(project), {}).get(directory.name)
+
+
+def register_task(project_root: str, task_md_path: str, command: str, created_at: str) -> None:
+    """Atomically persist commands authorized through task creation/set-verify."""
+    registry = load_registry()
+    project = str(Path(project_root).resolve())
+    name = Path(task_md_path).resolve().parent.name
+    tasks = registry.setdefault(project, {})
+    previous = tasks.get(name, {})
+    tasks[name] = {
+        "verify_command": command,
+        "created_at": previous.get("created_at", created_at),
+    }
+    path = registry_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=path.parent,
+                                         prefix="registry-", suffix=".tmp", delete=False) as output:
+            temporary = Path(output.name)
+            json.dump(registry, output, ensure_ascii=True)
+        os.replace(temporary, path)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
 
 
 def get_project_root() -> str:
@@ -244,6 +303,8 @@ def create_task(
 
     task_md_path = os.path.join(task_dir, FILE_TASK_MD)
     save_task(task_md_path, frontmatter, body)
+
+    register_task(project_root, task_md_path, frontmatter["verify_command"], frontmatter["created_at"])
 
     current_task_file = get_current_task_file(project_root)
     relative_task_dir = os.path.relpath(task_dir, project_root)
@@ -469,6 +530,11 @@ def set_verify(command: str) -> bool:
         frontmatter["status"] = "in_progress"
     if not write_task_md(task_md_path, frontmatter, body):
         print("Error: Failed to write task.md.", file=sys.stderr)
+        return False
+    try:
+        register_task(project_root, task_md_path, command, datetime.now().isoformat())
+    except OSError as error:
+        print(f"Error: Failed to write do registry: {error}", file=sys.stderr)
         return False
     return True
 
