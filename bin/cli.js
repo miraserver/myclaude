@@ -16,7 +16,7 @@ const API_HEADERS = {
   Accept: "application/vnd.github+json",
 };
 const WRAPPER_REQUIRED_MODULES = new Set(["do", "omo", "course"]);
-const WRAPPER_REQUIRED_SKILLS = new Set(["dev"]);
+const WRAPPER_REQUIRED_SKILLS = new Set(["dev", "codeagent", "do", "omo"]);
 
 function parseArgs(argv) {
   const out = {
@@ -415,11 +415,9 @@ function mergeHookEntries(moduleName, moduleHooks, installDir, pluginRoots) {
         })),
         __module__: moduleName,
       };
-      settings.hooks[hookType] = settings.hooks[hookType].filter((old) => {
-        if (!old || Object.prototype.hasOwnProperty.call(old, "__module__")) return true;
-        const { __module__, ...plain } = entryCopy;
-        return !deepEqual(old, plain);
-      });
+      const { __module__, ...plain } = entryCopy;
+      if (settings.hooks[hookType].some((old) => old &&
+          !Object.prototype.hasOwnProperty.call(old, "__module__") && deepEqual(old, plain))) continue;
       const key = hookEntryKey(entryCopy);
       if (!settings.hooks[hookType].some((existing) => existing && hookEntryKey(existing) === key)) {
         settings.hooks[hookType].push(entryCopy);
@@ -635,9 +633,9 @@ async function updateInstalledModules(installDir, tag, config, dryRun, explicitF
         let r;
         if (name.startsWith("skill:")) {
           const skillName = name.slice(6);
-          const files = {};
-          await copyDirRecursive(path.join(repoRoot, "skills", skillName), path.join(installDir, "skills", skillName), true, files, installDir);
-          r = { files, module: name, status: "installed", installed_at: new Date().toISOString(), operations: [{ type: "copy_dir", source: `skills/${skillName}`, target: `skills/${skillName}` }] };
+          if (WRAPPER_REQUIRED_SKILLS.has(skillName)) await ensureWrapperInstalled();
+          r = await applyModule(name, { modules: { [name]: { operations: [{ type: "copy_dir", source: `skills/${skillName}`, target: `skills/${skillName}` }] } } }, repoRoot, installDir, true, tag, installState, explicitForce, offline);
+          r.status = "installed";
         } else r = await applyModule(name, config, repoRoot, installDir, true, tag, installState, explicitForce, offline);
         r.version = tag || "offline";
         upsertModuleStatus(installDir, r);
@@ -860,7 +858,33 @@ function relativeFilePath(installDir, target) {
   return path.relative(installDir, target).split(path.sep).join("/");
 }
 
-async function copyFile(src, dst, force, files, installDir) {
+function canonicalFileKey(rel) {
+  return typeof rel === "string" && !/[\\:]/.test(rel) &&
+    rel.split("/").every((part) => part && part !== "." && part !== "..");
+}
+
+function ownershipFiles(entry) {
+  const files = {};
+  if (!entry || !isPlainObject(entry.files)) return files;
+  for (const [rel, hash] of Object.entries(entry.files)) {
+    if (canonicalFileKey(rel)) files[rel] = hash;
+    else process.stderr.write(`Warning: ignoring non-canonical ownership key: ${rel}\n`);
+  }
+  return files;
+}
+
+function retainedFiles(entry, installDir) {
+  return Object.fromEntries(Object.entries(ownershipFiles(entry))
+    .filter(([rel]) => fs.existsSync(path.join(installDir, rel))));
+}
+
+async function copyFile(src, dst, force, files, installDir, previous = {}, explicitForce = force) {
+  const rel = installDir && relativeFilePath(installDir, dst);
+  if (!explicitForce && Object.prototype.hasOwnProperty.call(previous, rel) && fs.existsSync(dst) &&
+      fileHash(await fs.promises.readFile(dst)) !== previous[rel] && !(await filesIdentical(src, dst))) {
+    process.stdout.write(`Keeping ${dst}: modified locally (use --force to overwrite)\n`);
+    return false;
+  }
   if (!force && fs.existsSync(dst)) return false;
   await fs.promises.mkdir(path.dirname(dst), { recursive: true });
   await fs.promises.copyFile(src, dst);
@@ -870,15 +894,15 @@ async function copyFile(src, dst, force, files, installDir) {
   return true;
 }
 
-async function copyDirRecursive(src, dst, force, files, installDir) {
+async function copyDirRecursive(src, dst, force, files, installDir, previous, explicitForce) {
   await fs.promises.mkdir(dst, { recursive: true });
 
   const entries = await fs.promises.readdir(src, { withFileTypes: true });
   for (const e of entries) {
     const s = path.join(src, e.name);
     const d = path.join(dst, e.name);
-    if (e.isDirectory()) await copyDirRecursive(s, d, force, files, installDir);
-    else if (e.isFile()) await copyFile(s, d, force, files, installDir);
+    if (e.isDirectory()) await copyDirRecursive(s, d, force, files, installDir, previous, explicitForce);
+    else if (e.isFile()) await copyFile(s, d, force, files, installDir, previous, explicitForce);
   }
 }
 
@@ -895,7 +919,7 @@ async function filesIdentical(src, dst) {
   }
 }
 
-async function mergeDir(src, installDir, force, moduleName, previouslyOwned, explicitForce) {
+async function mergeDir(src, installDir, force, moduleName, previouslyOwned, explicitForce, files, previous, skipped) {
   const installed = [];
   const subdirs = await fs.promises.readdir(src, { withFileTypes: true });
   for (const d of subdirs) {
@@ -911,12 +935,16 @@ async function mergeDir(src, installDir, force, moduleName, previouslyOwned, exp
       const target = path.join(dstSub, e.name);
       const exists = fs.existsSync(target);
       const identical = exists && await filesIdentical(source, target);
-      if (exists && !previouslyOwned.has(rel) && !identical && !explicitForce) {
+      if (exists && !previouslyOwned.has(rel) && !Object.prototype.hasOwnProperty.call(previous, rel) && !identical && !explicitForce) {
+        skipped.count++;
         process.stdout.write(`skipped ${target}: exists and is not owned by ${moduleName} (use --force to overwrite)\n`);
         continue;
       }
-      const didCopy = await copyFile(source, target, force);
-      if (didCopy || identical) installed.push(rel);
+      const didCopy = await copyFile(source, target, force, files, installDir, previous, explicitForce);
+      if (didCopy || identical) {
+        installed.push(rel);
+        if (identical) files[rel] = fileHash(await fs.promises.readFile(target));
+      }
     }
   }
   return installed;
@@ -1016,7 +1044,7 @@ function unmergeModuleAgents(moduleName, config, installDir) {
   if (modified) writeModels(modelsPath, models);
 }
 
-function mergeModuleAgentsToModels(moduleName, mod, repoRoot) {
+function mergeModuleAgentsToModels(moduleName, mod, repoRoot, installDir = path.join(os.homedir(), ".claude")) {
   const moduleAgents = mod && mod.agents;
   if (!isPlainObject(moduleAgents) || !Object.keys(moduleAgents).length) return false;
 
@@ -1048,7 +1076,12 @@ function mergeModuleAgentsToModels(moduleName, mod, repoRoot) {
     if (!canOverwrite) continue;
     if (isPlainObject(existing) && Object.prototype.hasOwnProperty.call(existing, "__hash__") &&
         agentDefaultsHash(existing) !== existing.__hash__) continue;
-    const next = { ...agentCfg, __module__: moduleName, __hash__: agentDefaultsHash(agentCfg) };
+    const defaults = { ...agentCfg };
+    if (path.resolve(installDir) !== path.resolve(os.homedir(), ".claude") &&
+        typeof defaults.prompt_file === "string" && defaults.prompt_file.startsWith("~/.claude/")) {
+      defaults.prompt_file = path.join(installDir, defaults.prompt_file.slice("~/.claude/".length)).replace(/\\/g, "/");
+    }
+    const next = { ...defaults, __module__: moduleName, __hash__: agentDefaultsHash(defaults) };
     if (!deepEqual(existing, next)) {
       models.agents[agentName] = next;
       modified = true;
@@ -1073,18 +1106,21 @@ async function applyModule(moduleName, config, repoRoot, installDir, force, tag,
   };
   const status = loadInstalledStatus(installDir);
   const previous = status.modules[moduleName];
-  const previouslyOwned = new Set(previous && Array.isArray(previous.merge_dir_files) ? previous.merge_dir_files : []);
+  const previousFiles = ownershipFiles(previous);
+  result.files = retainedFiles(previous, installDir);
+  const skipped = { count: 0 };
+  const previouslyOwned = new Set(previous && Array.isArray(previous.merge_dir_files) ? previous.merge_dir_files.filter(canonicalFileKey) : []);
   const mergeDirFiles = new Set([...previouslyOwned].filter((rel) => fs.existsSync(path.join(installDir, rel))));
 
   for (const op of ops) {
     const type = op && op.type;
     try {
       if (type === "copy_file") {
-        await copyFile(path.join(repoRoot, op.source), path.join(installDir, op.target), force, result.files, installDir);
+        await copyFile(path.join(repoRoot, op.source), path.join(installDir, op.target), force, result.files, installDir, previousFiles, explicitForce);
       } else if (type === "copy_dir") {
-        await copyDirRecursive(path.join(repoRoot, op.source), path.join(installDir, op.target), force, result.files, installDir);
+        await copyDirRecursive(path.join(repoRoot, op.source), path.join(installDir, op.target), force, result.files, installDir, previousFiles, explicitForce);
       } else if (type === "merge_dir") {
-        const installed = await mergeDir(path.join(repoRoot, op.source), installDir, force, moduleName, previouslyOwned, explicitForce);
+        const installed = await mergeDir(path.join(repoRoot, op.source), installDir, force, moduleName, previouslyOwned, explicitForce, result.files, previousFiles, skipped);
         for (const rel of installed) mergeDirFiles.add(rel);
       } else if (type === "run_command") {
         const cmd = typeof op.command === "string" ? op.command.trim() : "";
@@ -1117,6 +1153,7 @@ async function applyModule(moduleName, config, repoRoot, installDir, force, tag,
     }
   }
 
+  if (skipped.count) process.stdout.write(`Module ${moduleName}: skipped ${skipped.count} foreign merge_dir file(s); use --force to take them over\n`);
   if (previouslyOwned.size || ops.some((op) => op && op.type === "merge_dir")) result.merge_dir_files = [...mergeDirFiles];
 
   try {
@@ -1136,7 +1173,7 @@ async function applyModule(moduleName, config, repoRoot, installDir, force, tag,
   }
 
   try {
-    if (mergeModuleAgentsToModels(moduleName, mod, repoRoot)) {
+    if (mergeModuleAgentsToModels(moduleName, mod, repoRoot, installDir)) {
       result.has_agents = true;
       result.operations.push({ type: "merge_agents", status: "success" });
     }
@@ -1206,17 +1243,60 @@ async function uninstallModule(moduleName, config, repoRoot, installDir, dryRun)
   const status = loadInstalledStatus(installDir);
   const moduleStatus = (status.modules && status.modules[moduleName]) || {};
   const recordedMerge = Array.isArray(moduleStatus.merge_dir_files) ? moduleStatus.merge_dir_files : null;
-  const recordedFiles = isPlainObject(moduleStatus.files) ? moduleStatus.files : {};
+  const hasFiles = isPlainObject(moduleStatus.files);
+  const recordedFiles = ownershipFiles(moduleStatus);
+  const keptMerge = new Set();
+  function sharedFile(rel) {
+    return Object.entries(status.modules).some(([name, entry]) => {
+      if (name === moduleName || !["installed", "success", "partial_uninstall"].includes(entry.status)) return false;
+      if (Object.prototype.hasOwnProperty.call(ownershipFiles(entry), rel) ||
+          (Array.isArray(entry.merge_dir_files) && entry.merge_dir_files.filter(canonicalFileKey).includes(rel))) return true;
+      const otherSkill = name.startsWith("skill:") ? name.slice(6) : null;
+      const operations = otherSkill ? [{ type: "copy_dir", target: `skills/${otherSkill}` }] :
+        ((((config && config.modules) || {})[name] || {}).operations || []);
+      return [...operations, ...(entry.operations || [])].some((op) => {
+        const target = typeof op.target === "string" ? op.target.replace(/\\/g, "/").replace(/\/+$/, "") : "";
+        return target && (op.type === "copy_file" ? rel === target :
+          op.type === "copy_dir" && rel.startsWith(target + "/"));
+      });
+    });
+  }
   const keptFiles = {};
   const processed = new Set();
   const cleanupDirs = new Set();
   async function removeFile(target, source, requireSource = false) {
     const rel = relativeFilePath(installDir, target);
+    if (!canonicalFileKey(rel)) {
+      process.stderr.write(`Warning: ignoring non-canonical ownership key: ${rel}\n`);
+      return;
+    }
     if (processed.has(rel)) return;
     processed.add(rel);
     if (!fs.existsSync(target)) return;
     const recorded = Object.prototype.hasOwnProperty.call(recordedFiles, rel);
+    if (hasFiles && !recorded) return;
+    if (sharedFile(rel)) {
+      process.stdout.write(`Keeping ${target}: shared with another installed module\n`);
+      return;
+    }
     let expected = recorded ? recordedFiles[rel] : undefined;
+    const keep = () => {
+      if (expected !== undefined) keptFiles[rel] = expected;
+      if (recordedMerge && recordedMerge.includes(rel)) keptMerge.add(rel);
+    };
+    let parentRel;
+    try {
+      parentRel = path.relative(fs.realpathSync(installDir), fs.realpathSync(path.dirname(target)));
+    } catch (err) {
+      process.stderr.write(`Warning: keeping ${target}: cannot verify parent directory: ${err.message}\n`);
+      keep();
+      return;
+    }
+    if (parentRel === ".." || parentRel.startsWith(".." + path.sep) || path.isAbsolute(parentRel)) {
+      process.stderr.write(`Warning: keeping ${target}: parent escapes install directory\n`);
+      keep();
+      return;
+    }
     if (!recorded && source) {
       try { expected = fileHash(await fs.promises.readFile(source)); } catch {
         // Directory copies historically preserve files when comparison is unavailable.
@@ -1227,7 +1307,7 @@ async function uninstallModule(moduleName, config, repoRoot, installDir, dryRun)
     if (expected !== undefined && (!fs.lstatSync(target).isFile() ||
         fileHash(await fs.promises.readFile(target)) !== expected)) {
       process.stdout.write(`Keeping ${target}: differs from the installed copy\n`);
-      keptFiles[rel] = expected;
+      keep();
       return;
     }
     if (dryRun) process.stdout.write(`- remove ${target}\n`);
@@ -1274,54 +1354,30 @@ async function uninstallModule(moduleName, config, repoRoot, installDir, dryRun)
 
     if (recordedMerge) {
       for (const rel of recordedMerge) {
-        const parts = String(rel).split("/").filter(Boolean);
-        if (parts.includes("..")) continue;
-        const p = path.join(installDir, ...parts);
-        const src = path.join(repoRoot, source, ...parts);
-        if (!fs.existsSync(p)) continue;
-        if (!fs.existsSync(src) || !fs.lstatSync(p).isFile() || !fs.readFileSync(p).equals(fs.readFileSync(src))) {
-          process.stdout.write(`Keeping ${p}: differs from the installed copy\n`);
+        if (!canonicalFileKey(rel)) {
+          process.stderr.write(`Warning: ignoring non-canonical ownership key: ${rel}\n`);
           continue;
         }
-        if (dryRun) process.stdout.write(`- remove ${p}\n`);
-        else {
-          await removePathIfExists(p);
-          await tryRemoveEmptyDir(path.dirname(p));
-        }
+        await removeFile(path.join(installDir, rel), path.join(repoRoot, source, rel), true);
+        cleanupDirs.add(path.dirname(path.join(installDir, rel)));
       }
       continue;
     }
-
     const srcDir = path.join(repoRoot, source);
     if (!(await dirExists(srcDir))) continue;
     const subdirs = await fs.promises.readdir(srcDir, { withFileTypes: true });
     for (const d of subdirs) {
       if (!d.isDirectory()) continue;
       const srcSub = path.join(srcDir, d.name);
-      const entries = await fs.promises.readdir(srcSub, { withFileTypes: true });
-      for (const e of entries) {
+      for (const e of await fs.promises.readdir(srcSub, { withFileTypes: true })) {
         if (!e.isFile()) continue;
-        const dst = path.join(installDir, d.name, e.name);
-        if (!fs.existsSync(dst)) continue;
-        try {
-          const [srcBuf, dstBuf] = await Promise.all([
-            fs.promises.readFile(path.join(srcSub, e.name)),
-            fs.promises.readFile(dst),
-          ]);
-          if (Buffer.compare(srcBuf, dstBuf) !== 0) continue;
-        } catch {
-          continue;
-        }
-        if (dryRun) process.stdout.write(`- remove ${dst}\n`);
-        else {
-          await removePathIfExists(dst);
-          await tryRemoveEmptyDir(path.dirname(dst));
-        }
+        await removeFile(path.join(installDir, d.name, e.name), path.join(srcSub, e.name), true);
+        cleanupDirs.add(path.join(installDir, d.name));
       }
     }
   }
 
-  const remaining = Object.keys(keptFiles);
+  const remaining = [...new Set([...Object.keys(keptFiles), ...keptMerge])];
   if (remaining.length) process.stdout.write(`Module ${moduleName} partially uninstalled; remaining files: ${remaining.join(", ")}\n`);
   if (dryRun) return;
   for (const dir of [...cleanupDirs].sort((a, b) => b.length - a.length)) await tryRemoveEmptyDir(dir);
@@ -1331,11 +1387,11 @@ async function uninstallModule(moduleName, config, repoRoot, installDir, dryRun)
     .map((op) => path.resolve(installDir, op.target).replace(/\\/g, "/"));
   unmergeHooksFromSettings(moduleName, installDir, pluginRoots);
   unmergeModuleAgents(moduleName, config, installDir);
-  if (remaining.length) upsertModuleStatus(installDir, { ...moduleStatus, module: moduleName, status: "partial_uninstall", files: keptFiles });
+  if (remaining.length) upsertModuleStatus(installDir, { ...moduleStatus, module: moduleName, status: "partial_uninstall", ...((hasFiles || Object.keys(keptFiles).length) ? { files: keptFiles } : {}), ...(recordedMerge ? { merge_dir_files: [...keptMerge] } : {}) });
   else deleteModuleStatus(installDir, moduleName);
 }
 
-async function installDefaultConfigs(installDir, repoRoot, withClaudeMd = false) {
+async function installDefaultConfigs(installDir, repoRoot, withClaudeMd = false, ensureWrapperInstalled = async () => {}) {
   try {
     const claudeMdTarget = path.join(installDir, "CLAUDE.md");
     const claudeMdSrc = path.join(repoRoot, "memorys", "CLAUDE.md");
@@ -1343,6 +1399,7 @@ async function installDefaultConfigs(installDir, repoRoot, withClaudeMd = false)
       await fs.promises.copyFile(claudeMdSrc, claudeMdTarget);
       process.stdout.write(`Installed CLAUDE.md to ${claudeMdTarget}\n`);
     }
+    if (withClaudeMd) await ensureWrapperInstalled();
     const skillTarget = path.join(installDir, "skills", "codeagent", "SKILL.md");
     if (fs.existsSync(claudeMdTarget) && fs.existsSync(claudeMdSrc) &&
         fs.readFileSync(claudeMdTarget).equals(fs.readFileSync(claudeMdSrc)) &&
@@ -1494,24 +1551,13 @@ async function installSelected(picks, tag, config, installDir, force, dryRun, of
         if (WRAPPER_REQUIRED_SKILLS.has(p.skillName)) await ensureWrapperInstalled();
         process.stdout.write(`Installing skill: ${p.skillName}\n`);
         const skillSource = `skills/${p.skillName}`;
-        const files = {};
-        await copyDirRecursive(
-          path.join(repoRoot, "skills", p.skillName),
-          path.join(installDir, "skills", p.skillName),
-          force, files, installDir
-        );
-        upsertModuleStatus(installDir, {
-          module: `skill:${p.skillName}`,
-          files,
-          status: "installed",
-          version: tag || "offline",
-          installed_at: new Date().toISOString(),
-          operations: [{ type: "copy_dir", source: skillSource, target: `skills/${p.skillName}` }],
-        });
+        const name = `skill:${p.skillName}`;
+        const r = await applyModule(name, { modules: { [name]: { operations: [{ type: "copy_dir", source: skillSource, target: skillSource }] } } }, repoRoot, installDir, force, tag, installState, force, offline);
+        upsertModuleStatus(installDir, { ...r, status: "installed", version: tag || "offline" });
       }
     }
 
-    await installDefaultConfigs(installDir, repoRoot, withClaudeMd);
+    await installDefaultConfigs(installDir, repoRoot, withClaudeMd, ensureWrapperInstalled);
     printPostInstallInfo(installDir);
   } finally {
     await rmTree(tmp);

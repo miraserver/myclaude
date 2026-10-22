@@ -565,14 +565,16 @@ test("re-merge removes obsolete owned hook types", (t) => {
   assert.deepEqual(f.read().hooks, {});
 });
 
-test("exact untagged duplicate is replaced by one owned hook", (t) => {
+test("exact untagged duplicate stays user-owned after module uninstall", (t) => {
   const f = fixture(t);
   fs.writeFileSync(f.settingsPath, JSON.stringify({
     hooks: { Stop: [commandEntry('python3 "' + f.root + '/hooks/stop-hook.py"')] },
   }));
-  assert.equal(mergeHooksToSettings("do", doHooks, f.installDir, f.root), true);
+  assert.equal(mergeHooksToSettings("do", doHooks, f.installDir, f.root), false);
   assert.equal(f.read().hooks.Stop.length, 1);
-  assert.equal(f.read().hooks.Stop[0].__module__, "do");
+  assert.equal(f.read().hooks.Stop[0].__module__, undefined);
+  unmergeHooksFromSettings("do", f.installDir);
+  assert.equal(f.read().hooks.Stop.length, 1);
 });
 
 test("untagged hooks with different quoting and interpreters are preserved", (t) => {
@@ -1761,4 +1763,256 @@ test("legacy copy entries retain source comparison and update refreshes hashes",
       "agents/demo.md": sha256("release B agent"),
     });
   }
+});
+
+// Requirement regressions use only fixture directories and stub wrapper downloads.
+function requirementSandbox(repo, home = repo) {
+  let output = "";
+  let warnings = "";
+  const sandbox = {
+    module: { exports: {} }, __dirname: path.join(repo, "bin"),
+    require: (name) => name === "os" ? { ...os, homedir: () => home } : require(name),
+    process: { platform: process.platform, env: { ...process.env },
+      stdout: { write(value) { output += value; } }, stderr: { write(value) { warnings += value; } } },
+  };
+  vm.runInNewContext(fs.readFileSync(cliPath, "utf8") + `
+    repoRootFromHere = () => ${JSON.stringify(repo)};
+    let wrapperCalls = 0;
+    runInstallSh = async () => { wrapperCalls++; };
+    module.exports.install = installSelected;
+    module.exports.update = updateInstalledModules;
+    module.exports.wrapperCalls = () => wrapperCalls;
+  `, sandbox);
+  return { api: sandbox.module.exports, output: () => output, warnings: () => warnings };
+}
+
+for (const type of ["copy_file", "copy_dir", "merge_dir"]) {
+  test(`I1/I2 ${type}: repeated reinstall, retired ownership, local edits and force`, async (t) => {
+    const f = fixture(t);
+    const repo = path.join(f.installDir, "repo");
+    const source = type === "merge_dir" ? "source/commands" : "source";
+    fs.mkdirSync(path.join(repo, source), { recursive: true });
+    const targetDir = type === "merge_dir" ? "commands" : "skills/demo";
+    const rel = `${targetDir}/owned.md`;
+    fs.writeFileSync(path.join(repo, source, "owned.md"), "v1");
+    const op = type === "copy_file" ? { type, source: "source/owned.md", target: rel } :
+      { type, source: "source", ...(type === "copy_dir" ? { target: targetDir } : {}) };
+    const config = { modules: { demo: { operations: [op] } } };
+    async function install(force = false, explicit = force) {
+      const result = await applyModule("demo", config, repo, f.installDir, force, null, {}, explicit);
+      upsertModuleStatus(f.installDir, result);
+      return result;
+    }
+    const first = await install();
+    assert.equal(first.files[rel], sha256("v1"));
+    for (let i = 0; i < 2; i++) assert.deepEqual((await install()).files, first.files);
+    fs.writeFileSync(path.join(f.installDir, rel), "user edit");
+    fs.writeFileSync(path.join(repo, source, "owned.md"), "v2");
+    let output = "";
+    const write = process.stdout.write;
+    process.stdout.write = value => { output += value; return true; };
+    let kept;
+    try { kept = await install(true, false); } finally { process.stdout.write = write; }
+    assert.match(output, /Keeping .*owned.md: modified locally \(use --force to overwrite\)/);
+    assert.equal(fs.readFileSync(path.join(f.installDir, rel), "utf8"), "user edit");
+    assert.equal(kept.files[rel], first.files[rel]);
+    assert.equal((await install(true, true)).files[rel], sha256("v2"));
+    fs.unlinkSync(path.join(repo, source, "owned.md"));
+    if (type === "copy_file") config.modules.demo.operations = [];
+    assert.equal((await install(true, false)).files[rel], sha256("v2"));
+    await uninstallModule("demo", config, repo, f.installDir, false);
+    assert.equal(fs.existsSync(path.join(f.installDir, rel)), false);
+  });
+}
+
+for (const type of ["copy_file", "copy_dir", "merge_dir"]) {
+  test(`I1 ${type}: unrecorded identical user file is never deleted`, async (t) => {
+    const f = fixture(t);
+    const repo = path.join(f.installDir, "repo");
+    fs.mkdirSync(path.join(repo, "source", "commands"), { recursive: true });
+    fs.mkdirSync(path.join(f.installDir, "commands"));
+    fs.writeFileSync(path.join(repo, "source", "commands", "user.md"), "same");
+    fs.writeFileSync(path.join(f.installDir, "commands", "user.md"), "same");
+    const op = type === "copy_file" ? { type, source: "source/commands/user.md", target: "commands/user.md" } :
+      { type, source: type === "copy_dir" ? "source/commands" : "source", target: "commands" };
+    const config = { modules: { demo: { operations: [op] } } };
+    upsertModuleStatus(f.installDir, { module: "demo", files: {}, merge_dir_files: ["commands/user.md"] });
+    await uninstallModule("demo", config, repo, f.installDir, false);
+    assert.equal(fs.readFileSync(path.join(f.installDir, "commands", "user.md"), "utf8"), "same");
+  });
+}
+
+test("I1 merge_dir hashes allow partial uninstall and retry after upstream removal", async (t) => {
+  const f = fixture(t);
+  const repo = path.join(f.installDir, "repo");
+  fs.mkdirSync(path.join(repo, "source", "commands"), { recursive: true });
+  for (const name of ["clean", "edited"]) fs.writeFileSync(path.join(repo, "source", "commands", name), name);
+  const config = { modules: { demo: { operations: [{ type: "merge_dir", source: "source" }] } } };
+  upsertModuleStatus(f.installDir, await applyModule("demo", config, repo, f.installDir, false));
+  fs.writeFileSync(path.join(f.installDir, "commands", "edited"), "user");
+  fs.rmSync(path.join(repo, "source"), { recursive: true });
+  await uninstallModule("demo", config, repo, f.installDir, false);
+  const entry = loadInstalledStatus(f.installDir).modules.demo;
+  assert.equal(entry.status, "partial_uninstall");
+  assert.deepEqual(entry.files, { "commands/edited": sha256("edited") });
+  assert.deepEqual(entry.merge_dir_files, ["commands/edited"]);
+  assert.equal(fs.existsSync(path.join(f.installDir, "commands", "clean")), false);
+  fs.writeFileSync(path.join(f.installDir, "commands", "edited"), "edited");
+  await uninstallModule("demo", config, repo, f.installDir, false);
+  assert.equal(loadInstalledStatus(f.installDir).modules.demo, undefined);
+});
+
+for (const ownership of ["files", "merge_dir_files", "copy_dir", "copy_file"]) {
+  for (const status of ["installed", "success", "partial_uninstall"]) {
+    test(`I3 course uninstall keeps skill:dev shared via ${ownership}, ${status}`, async (t) => {
+      const f = fixture(t);
+      const rel = "skills/dev/SKILL.md";
+      fs.mkdirSync(path.dirname(path.join(f.installDir, rel)), { recursive: true });
+      fs.writeFileSync(path.join(f.installDir, rel), "dev");
+      upsertModuleStatus(f.installDir, { module: "course", files: { [rel]: sha256("dev") }, status: "success" });
+      const other = { module: ownership.startsWith("copy_") ? "other" : "skill:dev", status };
+      if (ownership === "files") other.files = { [rel]: sha256("dev") };
+      if (ownership === "merge_dir_files") other.merge_dir_files = [rel];
+      upsertModuleStatus(f.installDir, other);
+      const config = { modules: { course: { operations: [] }, other: { operations: [
+        { type: ownership, target: ownership === "copy_dir" ? "skills/dev" : rel },
+      ] } } };
+      await uninstallModule("course", config, f.installDir, f.installDir, false);
+      assert.equal(fs.readFileSync(path.join(f.installDir, rel), "utf8"), "dev");
+      assert.equal(loadInstalledStatus(f.installDir).modules.course, undefined);
+    });
+  }
+}
+
+test("I4 standalone codeagent and --with-claude-md ensure wrapper (stubbed)", async (t) => {
+  const f = fixture(t);
+  const repo = path.join(f.installDir, "repo");
+  fs.mkdirSync(path.join(repo, "skills", "codeagent"), { recursive: true });
+  fs.mkdirSync(path.join(repo, "memorys"));
+  fs.writeFileSync(path.join(repo, "skills", "codeagent", "SKILL.md"), "wrapper");
+  fs.writeFileSync(path.join(repo, "memorys", "CLAUDE.md"), "workflow");
+  const s = requirementSandbox(repo);
+  await s.api.install([{ kind: "skill", skillName: "codeagent" }], null, {}, f.installDir, false, false);
+  assert.equal(s.api.wrapperCalls(), 1);
+  await s.api.update(f.installDir, null, { modules: {} }, false, false, true);
+  assert.equal(s.api.wrapperCalls(), 2);
+  await s.api.install([], null, {}, f.installDir, false, false, false, true);
+  assert.equal(s.api.wrapperCalls(), 3);
+  assert.equal(fs.readFileSync(path.join(f.installDir, "CLAUDE.md"), "utf8"), "workflow");
+});
+
+test("I5 rejects non-canonical ownership keys even when they normalize to a source target", async (t) => {
+  const f = fixture(t);
+  const s = requirementSandbox(path.join(f.installDir, "repo"));
+  fs.mkdirSync(path.join(f.installDir, "commands"));
+  fs.writeFileSync(path.join(f.installDir, "commands", "safe"), "safe");
+  const keys = ["commands/./safe", "commands/x/../safe", "commands//safe", "commands\\safe",
+    "/commands/safe", "C:/commands/safe", "//server/share/safe", "../safe"];
+  upsertModuleStatus(f.installDir, { module: "demo", files: Object.fromEntries(keys.map(k => [k, sha256("safe")])) });
+  await s.api.uninstallModule("demo", { modules: { demo: { operations: [{ type: "copy_file", target: "commands/safe" }] } } }, f.installDir, f.installDir, false);
+  assert.equal(fs.readFileSync(path.join(f.installDir, "commands", "safe"), "utf8"), "safe");
+  for (const key of keys) assert.ok(s.warnings().includes(key), key);
+});
+
+test("I5 uninstall keeps files behind a junction or symlink escaping installDir", async (t) => {
+  const f = fixture(t);
+  const external = fs.mkdtempSync(path.join(os.tmpdir(), "myclaude-outside-"));
+  t.after(() => fs.rmSync(external, { recursive: true, force: true }));
+  fs.writeFileSync(path.join(external, "safe"), "safe");
+  const link = path.join(f.installDir, "linked");
+  try { fs.symlinkSync(external, link, process.platform === "win32" ? "junction" : "dir"); }
+  catch (err) { t.skip(`OS cannot create a directory link: ${err.message}`); return; }
+  const s = requirementSandbox(path.join(f.installDir, "repo"));
+  upsertModuleStatus(f.installDir, { module: "demo", files: { "linked/safe": sha256("safe") } });
+  await s.api.uninstallModule("demo", { modules: { demo: { operations: [] } } }, f.installDir, f.installDir, false);
+  assert.equal(fs.readFileSync(path.join(external, "safe"), "utf8"), "safe");
+  assert.match(s.warnings(), /parent escapes install directory/);
+  assert.equal(loadInstalledStatus(f.installDir).modules.demo.status, "partial_uninstall");
+});
+
+test("I6 identical unmarked user hook survives merge, reinstall, and uninstall", (t) => {
+  const hook = { matcher: "*", hooks: [{ type: "command", command: "echo user" }] };
+  const f = fixture(t, { hooks: { Stop: [hook] } });
+  for (let i = 0; i < 2; i++) mergeHooksToSettings("demo", { hooks: { Stop: [hook] } }, f.installDir);
+  assert.deepEqual(f.read().hooks.Stop, [hook]);
+  unmergeHooksFromSettings("demo", f.installDir);
+  assert.deepEqual(f.read().hooks.Stop, [hook]);
+});
+
+test("I7 legacy merge_dir update reports count and force takeover instruction", async (t) => {
+  const f = fixture(t);
+  const repo = path.join(f.installDir, "repo");
+  fs.mkdirSync(path.join(repo, "source", "commands"), { recursive: true });
+  fs.mkdirSync(path.join(f.installDir, "commands"));
+  for (const name of ["one", "two"]) {
+    fs.writeFileSync(path.join(repo, "source", "commands", name), "upstream");
+    fs.writeFileSync(path.join(f.installDir, "commands", name), "foreign");
+  }
+  upsertModuleStatus(f.installDir, { module: "demo", status: "success" });
+  const s = requirementSandbox(repo);
+  await s.api.update(f.installDir, null, { modules: { demo: { operations: [{ type: "merge_dir", source: "source" }] } } }, false, false, true);
+  assert.match(s.output(), /Module demo: skipped 2 foreign merge_dir file\(s\); use --force to take them over/);
+});
+
+test("I8 relocated prompt_file applies only to module defaults; default home keeps tilde", (t) => {
+  const f = fixture(t);
+  const s = requirementSandbox(path.join(f.installDir, "repo"), f.installDir);
+  const modelPath = path.join(f.installDir, ".codeagent", "models.json");
+  const mod = { agents: { owned: { prompt_file: "~/.claude/skills/omo/references/x.md" },
+    custom: { prompt_file: "~/.claude/skills/omo/references/x.md" } } };
+  fs.mkdirSync(path.dirname(modelPath), { recursive: true });
+  fs.writeFileSync(modelPath, JSON.stringify({ agents: { custom: { prompt_file: "custom.md" } } }));
+  const relocated = path.join(f.installDir, "relocated");
+  s.api.mergeModuleAgentsToModels("omo", mod, f.installDir, relocated);
+  let models = JSON.parse(fs.readFileSync(modelPath));
+  assert.equal(models.agents.owned.prompt_file, path.join(relocated, "skills/omo/references/x.md").replace(/\\/g, "/"));
+  assert.equal(models.agents.custom.prompt_file, "custom.md");
+  assert.equal(models.agents.owned.__hash__, agentDefaultsHash(models.agents.owned));
+  s.api.mergeModuleAgentsToModels("omo", mod, f.installDir, path.join(f.installDir, ".claude"));
+  models = JSON.parse(fs.readFileSync(modelPath));
+  assert.equal(models.agents.owned.prompt_file, "~/.claude/skills/omo/references/x.md");
+});
+
+test("I1/I2 standalone skill reinstall and update retain ownership and protect local edits", async (t) => {
+  const f = fixture(t);
+  const repo = path.join(f.installDir, "repo");
+  const source = path.join(repo, "skills", "solo");
+  fs.mkdirSync(source, { recursive: true });
+  fs.writeFileSync(path.join(source, "SKILL.md"), "v1");
+  fs.writeFileSync(path.join(source, "retired.md"), "retired");
+  const s = requirementSandbox(repo);
+  const pick = [{ kind: "skill", skillName: "solo" }];
+  const config = { modules: {} };
+  for (let i = 0; i < 3; i++) {
+    await s.api.install(pick, null, config, f.installDir, false, false, true);
+    assert.deepEqual(loadInstalledStatus(f.installDir).modules["skill:solo"].files, {
+      "skills/solo/SKILL.md": sha256("v1"), "skills/solo/retired.md": sha256("retired"),
+    });
+  }
+  fs.writeFileSync(path.join(f.installDir, "skills", "solo", "SKILL.md"), "user");
+  fs.writeFileSync(path.join(source, "SKILL.md"), "v2");
+  fs.unlinkSync(path.join(source, "retired.md"));
+  await s.api.update(f.installDir, null, config, false, false, true);
+  assert.equal(fs.readFileSync(path.join(f.installDir, "skills", "solo", "SKILL.md"), "utf8"), "user");
+  assert.match(s.output(), /Keeping .*SKILL.md: modified locally \(use --force to overwrite\)/);
+  assert.equal(loadInstalledStatus(f.installDir).modules["skill:solo"].files["skills/solo/SKILL.md"], sha256("v1"));
+  await s.api.update(f.installDir, null, config, false, true, true);
+  assert.equal(fs.readFileSync(path.join(f.installDir, "skills", "solo", "SKILL.md"), "utf8"), "v2");
+  await s.api.uninstallModule("skill:solo", config, repo, f.installDir, false);
+  assert.equal(fs.existsSync(path.join(f.installDir, "skills", "solo")), false);
+});
+
+test("I2 merge_dir respects a files hash even without a legacy merge_dir_files list", async (t) => {
+  const f = fixture(t);
+  const repo = path.join(f.installDir, "repo");
+  fs.mkdirSync(path.join(repo, "source", "commands"), { recursive: true });
+  fs.mkdirSync(path.join(f.installDir, "commands"));
+  fs.writeFileSync(path.join(repo, "source", "commands", "demo"), "v2");
+  fs.writeFileSync(path.join(f.installDir, "commands", "demo"), "user");
+  upsertModuleStatus(f.installDir, { module: "demo", files: { "commands/demo": sha256("v1") } });
+  const s = requirementSandbox(repo);
+  const r = await s.api.applyModule("demo", { modules: { demo: { operations: [{ type: "merge_dir", source: "source" }] } } }, repo, f.installDir, true, null, {}, false);
+  assert.match(s.output(), /Keeping .*demo: modified locally \(use --force to overwrite\)/);
+  assert.equal(r.files["commands/demo"], sha256("v1"));
+  assert.equal(fs.readFileSync(path.join(f.installDir, "commands", "demo"), "utf8"), "user");
 });
