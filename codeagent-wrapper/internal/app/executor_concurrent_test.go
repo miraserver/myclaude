@@ -423,11 +423,12 @@ func TestExecutorRunCodexTaskWithContext(t *testing.T) {
 		t.Cleanup(func() { executor.SetNewCommandRunner(nil) })
 
 		_ = closeLogger()
-		res := runCodexTaskWithContext(context.TODO(), TaskSpec{ID: "task-backend", Task: "payload", WorkDir: "/tmp"}, ClaudeBackend{}, nil, false, false, 1)
+		dir := t.TempDir()
+		res := runCodexTaskWithContext(context.TODO(), TaskSpec{ID: "task-backend", Task: "payload", WorkDir: dir}, ClaudeBackend{}, nil, false, false, 1)
 		if res.ExitCode != 0 || res.Message != "backend" {
 			t.Fatalf("unexpected result: %+v", res)
 		}
-		if rc == nil || rc.dir != "/tmp" {
+		if rc == nil || rc.dir != dir {
 			t.Fatalf("expected backend to set cmd.Dir, got runner=%v dir=%q", rc, rc.dir)
 		}
 	})

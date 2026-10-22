@@ -1012,6 +1012,16 @@ func RunCodexTaskWithContext(parentCtx context.Context, taskSpec TaskSpec, backe
 		result.WorktreeBranch = paths.Branch
 	}
 
+	workDir := cfg.WorkDir
+	if workDir == "" {
+		workDir = defaultWorkdir
+	}
+	if info, err := os.Stat(workDir); err != nil || !info.IsDir() {
+		result.ExitCode = 1
+		result.Error = workdirNotFound(workDir, runtime.GOOS)
+		return result
+	}
+
 	var fileEnv map[string]string
 	if cfg.Backend == "claude" {
 		settings := loadMinimalClaudeSettings()
@@ -1503,6 +1513,14 @@ waitLoop:
 	emitProgress(silent, "completed", taskSpec, commandName, result.LogPath, time.Since(startedAt))
 
 	return result
+}
+
+func workdirNotFound(path, goos string) string {
+	msg := "workdir not found: " + path
+	if goos == "windows" && strings.HasPrefix(path, "/") {
+		msg += " (on Windows use a native path such as C:/..., e.g. from `cygpath -m`)"
+	}
+	return msg
 }
 
 func injectTempEnv(cmd commandRunner) {

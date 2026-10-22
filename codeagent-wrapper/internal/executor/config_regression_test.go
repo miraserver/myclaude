@@ -2,6 +2,8 @@ package executor
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -22,20 +24,25 @@ func TestExecutorUsesWorktreeSubdirectory(t *testing.T) {
 	original := createWorktreeFn
 	defer func() { createWorktreeFn = original }()
 	t.Setenv("DO_WORKTREE_DIR", "")
+	dir := t.TempDir()
+	workDir := filepath.Join(dir, "sub")
+	if err := os.Mkdir(workDir, 0755); err != nil {
+		t.Fatal(err)
+	}
 	createWorktreeFn = func(string) (*worktree.Paths, error) {
-		return &worktree.Paths{Dir: "tree", WorkDir: "tree/sub", Branch: "do/test"}, nil
+		return &worktree.Paths{Dir: dir, WorkDir: workDir, Branch: "do/test"}, nil
 	}
 	var got string
 	res := RunCodexTaskWithContext(context.Background(), TaskSpec{Task: "hi", WorkDir: "repo/sub", Worktree: true}, nil, "nonexistent-codeagent-regression-command", func(cfg *Config, _ string) []string { got = cfg.WorkDir; return nil }, nil, false, true, 0)
-	if res.WorktreePath != "tree" || res.WorktreeBranch != "do/test" {
+	if res.WorktreePath != dir || res.WorktreeBranch != "do/test" {
 		t.Fatal(res)
 	}
 	for _, summary := range []bool{true, false} {
-		if !strings.Contains(GenerateFinalOutputWithMode([]TaskResult{res}, summary), "Worktree: tree (branch do/test)") {
+		if !strings.Contains(GenerateFinalOutputWithMode([]TaskResult{res}, summary), "Worktree: "+dir+" (branch do/test)") {
 			t.Fatal("missing worktree report")
 		}
 	}
-	if got != "tree/sub" {
+	if got != workDir {
 		t.Fatalf("workdir %q", got)
 	}
 }

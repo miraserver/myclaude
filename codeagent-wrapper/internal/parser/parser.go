@@ -284,8 +284,17 @@ func ParseJSONStreamWithError(r io.Reader, warnFn func(string), infoFn func(stri
 			}
 
 			if event.Content != "" && event.Role != "user" && event.Role != "system" {
+				if geminiBuffer.Len() == 0 {
+					acceptMessage()
+				} else {
+					// Later deltas cannot repair missing content in an assembled answer.
+					if pendingDrop {
+						lostFinal = true
+					}
+					pendingDrop = false
+					completedAfterMessage = false
+				}
 				geminiBuffer.WriteString(event.Content)
-				acceptMessage()
 			}
 
 			if event.Status != "" {

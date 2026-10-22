@@ -72,6 +72,9 @@ func TestDroppedJSONCompletionOrdering(t *testing.T) {
 				{"later message requires new completion", []string{m, c, m, "{"}, true, true},
 			} {
 				t.Run(tc.name, func(t *testing.T) {
+					if backend.name == "gemini" && (tc.name == "later message repairs loss" || tc.name == "overlong tool output between messages") {
+						tc.fail = true // Gemini deltas append; later content cannot repair a gap.
+					}
 					msg, _, err := ParseJSONStreamWithError(strings.NewReader(strings.Join(tc.lines, "\n")), nil, nil, nil, nil)
 					want := "answer"
 					if tc.twice && backend.appendText {
