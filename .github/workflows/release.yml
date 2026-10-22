@@ -138,6 +138,7 @@ jobs:
             echo "Tag $GITHUB_REF_NAME does not match package version $PACKAGE_TAG" >&2
             exit 1
           fi
+          node -e 'const expected = require("./package.json").version; const check = value => { if (!value || typeof value !== "object") return; for (const [key, entry] of Object.entries(value)) { if (key === "version" && entry !== expected) throw new Error(`Marketplace version ${JSON.stringify(entry)} does not match package version ${expected}`); check(entry); } }; check(require("./.claude-plugin/marketplace.json"));'
 
       - name: Generate Release Notes
         id: release_notes
@@ -184,3 +185,62 @@ jobs:
           body_path: release_notes.md
           draft: false
           prerelease: false
+
+  smoke:
+    name: Post-release smoke (${{ matrix.os }})
+    needs: release
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+    env:
+      CODEAGENT_WRAPPER_VERSION: ${{ github.ref_name }}
+      RELEASE_URL: https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}
+    steps:
+      - name: Install published Unix release and verify version
+        if: runner.os != 'Windows'
+        shell: bash
+        env:
+          INSTALL_DIR: ${{ runner.temp }}/codeagent-smoke
+          SKIP_WARNING: '1'
+        run: |
+          set -euo pipefail
+          curl -fSL --retry 3 "$RELEASE_URL/install.sh" -o "$RUNNER_TEMP/install.sh"
+          export PATH="$INSTALL_DIR/bin:$PATH"
+          bash "$RUNNER_TEMP/install.sh" 2>&1 | tee "$RUNNER_TEMP/install.log"
+          if grep -Ei 'warning|error' "$RUNNER_TEMP/install.log"; then
+            echo "Installer reported a warning or error" >&2
+            exit 1
+          fi
+          "$INSTALL_DIR/bin/codeagent-wrapper" --version > "$RUNNER_TEMP/version.log" 2>&1
+          cat "$RUNNER_TEMP/version.log"
+          grep -F -- "$CODEAGENT_WRAPPER_VERSION" "$RUNNER_TEMP/version.log"
+
+      - name: Install published Windows release and verify version
+        if: runner.os == 'Windows'
+        shell: cmd
+        run: |
+          curl -fSL --retry 3 "%RELEASE_URL%/install.bat" -o "%RUNNER_TEMP%\install.bat"
+          if errorlevel 1 exit /b 1
+          set "USERPROFILE=%RUNNER_TEMP%\codeagent-smoke"
+          mkdir "%USERPROFILE%"
+          if errorlevel 1 exit /b 1
+          cmd /d /c call "%RUNNER_TEMP%\install.bat" > "%RUNNER_TEMP%\install.log" 2>&1
+          if errorlevel 1 (
+            type "%RUNNER_TEMP%\install.log"
+            exit /b 1
+          )
+          type "%RUNNER_TEMP%\install.log"
+          findstr /I /C:"WARNING" /C:"ERROR" "%RUNNER_TEMP%\install.log" >nul
+          if not errorlevel 1 exit /b 1
+          "%USERPROFILE%\bin\codeagent-wrapper.exe" --version > "%RUNNER_TEMP%\version.log" 2>&1
+          if errorlevel 1 (
+            type "%RUNNER_TEMP%\version.log"
+            exit /b 1
+          )
+          type "%RUNNER_TEMP%\version.log"
+          findstr /L /C:"%CODEAGENT_WRAPPER_VERSION%" "%RUNNER_TEMP%\version.log"
+          if errorlevel 1 exit /b 1
