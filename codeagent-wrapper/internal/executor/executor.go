@@ -939,17 +939,18 @@ func RunCodexTaskWithContext(parentCtx context.Context, taskSpec TaskSpec, backe
 	logger := injectedLogger
 
 	cfg := &Config{
-		Mode:            taskSpec.Mode,
-		Task:            taskSpec.Task,
-		SessionID:       taskSpec.SessionID,
-		WorkDir:         taskSpec.WorkDir,
-		Model:           taskSpec.Model,
-		ReasoningEffort: taskSpec.ReasoningEffort,
-		SkipPermissions: taskSpec.SkipPermissions,
-		Yolo:            taskSpec.Yolo,
-		Backend:         defaultBackendName,
-		AllowedTools:    taskSpec.AllowedTools,
-		DisallowedTools: taskSpec.DisallowedTools,
+		Mode:               taskSpec.Mode,
+		Task:               taskSpec.Task,
+		SessionID:          taskSpec.SessionID,
+		WorkDir:            taskSpec.WorkDir,
+		Model:              taskSpec.Model,
+		ReasoningEffort:    taskSpec.ReasoningEffort,
+		SkipPermissions:    taskSpec.SkipPermissions,
+		SkipPermissionsSet: taskSpec.SkipPermissionsSet,
+		Yolo:               taskSpec.Yolo,
+		Backend:            defaultBackendName,
+		AllowedTools:       taskSpec.AllowedTools,
+		DisallowedTools:    taskSpec.DisallowedTools,
 	}
 
 	commandName := strings.TrimSpace(defaultCommandName)

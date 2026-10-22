@@ -24,16 +24,20 @@ type ParallelConfig struct {
 }
 
 type BuildInput struct {
-	BackendName        string
-	Model              string
-	OutputPath         string
-	SummaryOnly        bool
-	SkipPermissions    bool
-	StdinData          []byte
-	MaxWorkers         int
-	ReasoningEffort    string
-	PromptFileOverride bool // A CLI flag takes priority over agent presets.
-	PromptFile         string
+	BackendName             string
+	BackendOverride         bool // Global CLI flag, above presets but below task fields.
+	ModelOverride           bool
+	SkipPermissionsSet      bool
+	SkipPermissionsOverride bool
+	Model                   string
+	OutputPath              string
+	SummaryOnly             bool
+	SkipPermissions         bool
+	StdinData               []byte
+	MaxWorkers              int
+	ReasoningEffort         string
+	PromptFileOverride      bool // A CLI flag takes priority over agent presets.
+	PromptFile              string
 }
 
 type BuildDeps struct {
@@ -62,8 +66,23 @@ func BuildPlan(input BuildInput, deps BuildDeps) (Plan, error) {
 	cfg.GlobalBackend = backendName
 	model := strings.TrimSpace(input.Model)
 	for i := range cfg.Tasks {
+		if input.BackendOverride && !cfg.Tasks[i].BackendExplicit {
+			cfg.Tasks[i].Backend = backendName
+		}
+		if cfg.Tasks[i].PresetBackend != "" && cfg.Tasks[i].Backend != cfg.Tasks[i].PresetBackend {
+			if !cfg.Tasks[i].ModelExplicit {
+				cfg.Tasks[i].Model = ""
+			}
+			if !cfg.Tasks[i].ReasoningExplicit {
+				cfg.Tasks[i].ReasoningEffort = ""
+			}
+			cfg.Tasks[i].Yolo = false
+		}
 		if strings.TrimSpace(cfg.Tasks[i].Backend) == "" {
 			cfg.Tasks[i].Backend = backendName
+		}
+		if input.ModelOverride && !cfg.Tasks[i].ModelExplicit {
+			cfg.Tasks[i].Model = model
 		}
 		if strings.TrimSpace(cfg.Tasks[i].Model) == "" && model != "" && cfg.Tasks[i].Backend == backendName {
 			cfg.Tasks[i].Model = model
@@ -75,7 +94,13 @@ func BuildPlan(input BuildInput, deps BuildDeps) (Plan, error) {
 			cfg.Tasks[i].PromptFile = input.PromptFile
 			cfg.Tasks[i].PromptFileExplicit = strings.TrimSpace(input.PromptFile) != ""
 		}
-		cfg.Tasks[i].SkipPermissions = cfg.Tasks[i].SkipPermissions || input.SkipPermissions
+		if input.SkipPermissionsOverride || !cfg.Tasks[i].SkipPermissionsSet {
+			cfg.Tasks[i].SkipPermissions = cfg.Tasks[i].SkipPermissions || input.SkipPermissions
+			if input.SkipPermissionsSet || input.SkipPermissionsOverride {
+				cfg.Tasks[i].SkipPermissions = input.SkipPermissions
+				cfg.Tasks[i].SkipPermissionsSet = true
+			}
+		}
 	}
 
 	domainTasks := make([]domaintask.TaskSpec, len(cfg.Tasks))

@@ -175,11 +175,6 @@ func runSingleMode(cfg *config.Config, name string) int {
 
 	adaptercli.RenderSingleTaskBanner(os.Stderr, name, cfg.Backend, append([]string{codexCommand}, plan.Command...), os.Getpid(), logger.Path())
 
-	if cfg.Mode == "new" && strings.TrimSpace(plan.TaskText) == "integration-log-check" {
-		logInfo("Integration log check: skipping backend execution")
-		return 0
-	}
-
 	logSingleTaskStdinReasons(plan)
 
 	logInfo(fmt.Sprintf("%s running...", cfg.Backend))

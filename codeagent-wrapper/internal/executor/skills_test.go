@@ -6,6 +6,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	runtaskset "codeagent-wrapper/internal/application/runtaskset"
 )
@@ -351,5 +352,46 @@ func TestSkillInjectionFormat(t *testing.T) {
 	}
 	if !strings.Contains(injected, "Use gofmt.") {
 		t.Error("missing skill body")
+	}
+}
+
+func TestResolveSkillContentRuneBudget(t *testing.T) {
+	const name = "cjk"
+	home := createTempSkill(t, name, strings.Repeat("中文测试😀", 50))
+	setTestHome(t, home)
+	for _, bodyBudget := range []int{1, 2, 5, 7, 249, 250, 251} {
+		prefix, suffix := "<skill name=\"cjk\">\n", "\n</skill>"
+		budget := len(prefix) + len(suffix) + bodyBudget
+		got := ResolveSkillContent([]string{name}, budget)
+		wantRunes := bodyBudget
+		if wantRunes > 250 {
+			wantRunes = 250
+		}
+		if !utf8.ValidString(got) || !strings.HasPrefix(got, prefix) || !strings.HasSuffix(got, suffix) {
+			t.Fatalf("budget %d: invalid UTF-8 or tags: %q", budget, got)
+		}
+		body := strings.TrimSuffix(strings.TrimPrefix(got, prefix), suffix)
+		if utf8.RuneCountInString(body) != wantRunes || utf8.RuneCountInString(got) > budget {
+			t.Fatalf("body budget %d: %q", bodyBudget, got)
+		}
+	}
+}
+
+func TestResolveSkillContentIncludesSeparatorsInBudget(t *testing.T) {
+	home := t.TempDir()
+	setTestHome(t, home)
+	for _, name := range []string{"a", "b"} {
+		dir := filepath.Join(home, ".claude", "skills", name)
+		if err := os.MkdirAll(dir, 0700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte("中文测试"), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	const budget = 60
+	got := ResolveSkillContent([]string{"a", "b"}, budget)
+	if !utf8.ValidString(got) || utf8.RuneCountInString(got) > budget || !strings.Contains(got, "<skill name=\"b\">") {
+		t.Fatalf("budget exceeded or second skill missing: %q", got)
 	}
 }

@@ -26,13 +26,18 @@ import (
 	"github.com/goccy/go-json"
 )
 
-// Helper to reset test hooks
+func TestMain(m *testing.M) {
+	resetTestHooks()
+	os.Exit(m.Run())
+}
+
+// Helper to reset test hooks. Real cleanup is opt-in for tests with isolated temp dirs.
 func resetTestHooks() {
 	stdinReader = os.Stdin
 	isTerminalFn = defaultIsTerminal
 	codexCommand = "codex"
 	cleanupHook = nil
-	cleanupLogsFn = cleanupOldLogs
+	cleanupLogsFn = func() (CleanupStats, error) { return CleanupStats{}, nil }
 	startupCleanupAsync = false
 	config.ResetModelsConfigCacheForTest()
 	_ = executor.SetSelectBackendFn(nil)
@@ -1001,7 +1006,7 @@ func TestBackendParseArgs_NewMode(t *testing.T) {
 			args:    []string{"codeagent-wrapper", "-", "-"},
 			wantErr: true,
 		},
-		{name: "no args", args: []string{"codeagent-wrapper"}, wantErr: true},
+		{name: "no args defers to piped stdin", args: []string{"codeagent-wrapper"}, want: &Config{Mode: "new", WorkDir: ".", Backend: defaultBackendName}},
 	}
 
 	for _, tt := range tests {
@@ -4335,7 +4340,7 @@ func TestVersionCoverageFullRun(t *testing.T) {
 
 		stdinReader = strings.NewReader(strings.Repeat("x", 900))
 		isTerminalFn = func() bool { return false }
-		os.Args = []string{"codeagent-wrapper", "ignored"}
+		os.Args = []string{"codeagent-wrapper"}
 		if code := run(); code != 0 {
 			t.Fatalf("run exit = %d, want 0 for piped input", code)
 		}
@@ -4582,6 +4587,8 @@ func TestRun_CleanupFlag(t *testing.T) {
 
 func TestRun_NoArgs(t *testing.T) {
 	defer resetTestHooks()
+	stdinReader = strings.NewReader("")
+	isTerminalFn = func() bool { return false }
 	os.Args = []string{"codeagent-wrapper"}
 	if code := run(); code != 1 {
 		t.Errorf("exit = %d, want 1", code)
@@ -4787,7 +4794,7 @@ func TestRun_PipedTaskReadError(t *testing.T) {
 	defer restore()
 	isTerminalFn = func() bool { return false }
 	stdinReader = errReader{errors.New("pipe failure")}
-	os.Args = []string{"codeagent-wrapper", "cli-task"}
+	os.Args = []string{"codeagent-wrapper"}
 
 	exitCode := run()
 	if exitCode != 1 {
@@ -4810,7 +4817,7 @@ func TestRun_PipedTaskSuccess(t *testing.T) {
 	defer restore()
 	isTerminalFn = func() bool { return false }
 	stdinReader = strings.NewReader("piped task text")
-	os.Args = []string{"codeagent-wrapper", "cli-task"}
+	os.Args = []string{"codeagent-wrapper"}
 
 	exitCode := run()
 	restoreStdoutPipe(stdout)
@@ -5124,39 +5131,6 @@ func TestBackendDiscardInvalidJSONBuffer(t *testing.T) {
 			t.Fatalf("expected EOF when no newline, got %v", err)
 		}
 	})
-}
-
-// Backend-focused coverage suite to ensure run() paths stay exercised under the focused pattern.
-func TestBackendRunCoverage(t *testing.T) {
-	suite := []struct {
-		name string
-		fn   func(*testing.T)
-	}{
-		{"SuccessfulExecution", TestRun_SuccessfulExecution},
-		{"ExplicitStdinSuccess", TestRun_ExplicitStdinSuccess},
-		{"PipedTaskSuccess", TestRun_PipedTaskSuccess},
-		{"LoggerLifecycle", TestRun_LoggerLifecycle},
-		{"CleanupFlag", TestRun_CleanupFlag},
-		{"NoArgs", TestRun_NoArgs},
-		{"CommandFails", TestRun_CommandFails},
-		{"CleanupHookAlwaysCalled", TestRun_CleanupHookAlwaysCalled},
-		{"VersionFlag", TestVersionFlag},
-		{"VersionShortFlag", TestVersionShortFlag},
-		{"VersionLegacyAlias", TestVersionLegacyAlias},
-		{"Help", TestRun_Help},
-		{"HelpShort", TestRun_HelpShort},
-		{"HelpDoesNotTriggerCleanup", TestRun_HelpDoesNotTriggerCleanup},
-		{"VersionDoesNotTriggerCleanup", TestVersionDoesNotTriggerCleanup},
-		{"VersionCoverageFullRun", TestVersionCoverageFullRun},
-		{"ExplicitStdinEmpty", TestRun_ExplicitStdinEmpty},
-		{"ExplicitStdinReadError", TestRun_ExplicitStdinReadError},
-		{"PipedTaskReadError", TestRun_PipedTaskReadError},
-		{"VersionMainWrapper", TestVersionMainWrapper},
-	}
-
-	for _, tc := range suite {
-		t.Run(tc.name, tc.fn)
-	}
 }
 
 func TestParallelLogPathInSerialMode(t *testing.T) {

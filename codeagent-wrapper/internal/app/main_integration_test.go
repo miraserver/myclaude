@@ -555,8 +555,14 @@ func TestRunNonParallelOutputsIncludeLogPathsIntegration(t *testing.T) {
 	os.Args = []string{"codeagent-wrapper", "integration-log-check"}
 	stdinReader = strings.NewReader("")
 	isTerminalFn = func() bool { return true }
-	codexCommand = createFakeCodexScript(t, "integration-session", "done")
-	buildCodexArgsFn = func(cfg *Config, targetArg string) []string { return []string{} }
+	called := false
+	runTaskFn = func(task TaskSpec, _ bool, _ int) TaskResult {
+		called = true
+		if task.Task != "integration-log-check" {
+			t.Errorf("task = %q", task.Task)
+		}
+		return TaskResult{ExitCode: 0, Message: "done"}
+	}
 
 	var exitCode int
 	stderr := captureStderr(t, func() {
@@ -569,6 +575,9 @@ func TestRunNonParallelOutputsIncludeLogPathsIntegration(t *testing.T) {
 		t.Fatalf("run() exit=%d, want 0", exitCode)
 	}
 	expectedLog := filepath.Join(tempDir, fmt.Sprintf("codeagent-wrapper-%d.log", os.Getpid()))
+	if !called {
+		t.Fatal("backend seam was not called")
+	}
 	wantLine := fmt.Sprintf("Log: %s", expectedLog)
 	if !strings.Contains(stderr, wantLine) {
 		t.Fatalf("stderr missing %q, got: %q", wantLine, stderr)
@@ -746,6 +755,7 @@ func TestRunStartupCleanupRemovesOrphansEndToEnd(t *testing.T) {
 	defer resetTestHooks()
 
 	tempDir := setTempDirEnv(t, t.TempDir())
+	cleanupLogsFn = cleanupOldLogs
 
 	orphanA := createTempLog(t, tempDir, "codeagent-wrapper-5001.log")
 	orphanB := createTempLog(t, tempDir, "codeagent-wrapper-5002-extra.log")
@@ -790,6 +800,7 @@ func TestRunStartupCleanupConcurrentWrappers(t *testing.T) {
 	defer resetTestHooks()
 
 	tempDir := setTempDirEnv(t, t.TempDir())
+	cleanupLogsFn = cleanupOldLogs
 
 	const totalLogs = 40
 	for i := 0; i < totalLogs; i++ {
@@ -830,6 +841,7 @@ func TestRunCleanupFlagEndToEnd_Success(t *testing.T) {
 	defer resetTestHooks()
 
 	tempDir := setTempDirEnv(t, t.TempDir())
+	cleanupLogsFn = cleanupOldLogs
 
 	basePID := os.Getpid()
 	stalePID1 := basePID + 10000

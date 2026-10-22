@@ -95,6 +95,8 @@ func BuildSingleConfig(cmd *cobra.Command, args []string, rawArgv []string, opts
 		}
 	}
 
+	backendName = strings.ToLower(backendName)
+	resolvedBackend = strings.ToLower(strings.TrimSpace(resolvedBackend))
 	yolo = yolo && backendName == resolvedBackend
 
 	modelFlagChanged := cmd.Flags().Changed("model")
@@ -144,10 +146,6 @@ func BuildSingleConfig(cmd *cobra.Command, args []string, rawArgv []string, opts
 		skipPermissions = v.GetBool("skip-permissions")
 	}
 
-	if len(args) == 0 {
-		return nil, fmt.Errorf("task required")
-	}
-
 	var skills []string
 	if cmd.Flags().Changed("skills") {
 		for _, s := range strings.Split(opts.Skills, ",") {
@@ -160,12 +158,14 @@ func BuildSingleConfig(cmd *cobra.Command, args []string, rawArgv []string, opts
 
 	cfg := &config.Config{
 		WorkDir:            defaultWorkdir,
+		TaskProvided:       len(args) > 0,
 		Backend:            backendName,
 		Agent:              agentName,
 		PromptFile:         promptFile,
 		PromptFileExplicit: promptFileExplicit,
 		OutputPath:         outputPath,
 		SkipPermissions:    skipPermissions,
+		SkipPermissionsSet: skipChanged || v.IsSet("skip-permissions"),
 		Yolo:               yolo,
 		Model:              model,
 		ReasoningEffort:    reasoningEffort,
@@ -174,6 +174,11 @@ func BuildSingleConfig(cmd *cobra.Command, args []string, rawArgv []string, opts
 		DisallowedTools:    resolvedDisallowedTools,
 		Skills:             skills,
 		Worktree:           opts.Worktree,
+	}
+
+	if len(args) == 0 {
+		cfg.Mode = "new"
+		return cfg, nil
 	}
 
 	if args[0] == "resume" {

@@ -25,6 +25,8 @@ codeagent-wrapper [flags] resume <session_id> <task|-> [workdir]
 codeagent-wrapper --parallel [flags] < tasks_config
 ```
 
+Positional task text takes priority over stdin. Piped task input is read only when no task argument is supplied or when the task is explicit `-`. The reserved subcommands are `cleanup`, `version`, and Cobra's automatic `help`; use stdin `-` for those literal task texts.
+
 ## CLI Flags
 
 | Flag | Description | Default |
@@ -37,7 +39,7 @@ codeagent-wrapper --parallel [flags] < tasks_config
 | `--prompt-file <path>` | Custom prompt file (restricted to ~/.claude or ~/.codeagent/agents/) | none |
 | `--output <path>` | Write structured JSON output to file | none |
 | `--worktree` | Execute in isolated git worktree (branch: do/{task_id}) | false |
-| `--skip-permissions` | Skip Claude backend permission prompts | false |
+| `--skip-permissions` | Skip Claude permission prompts; use `=false` to restore prompts | true (effective) |
 | `--parallel` | Enable parallel task execution from stdin | false |
 | `--full-output` | Include full messages in parallel output (default: summary) | false |
 | `--config <path>` | Config file path | ~/.codeagent/config.* |
@@ -52,6 +54,12 @@ codeagent-wrapper --parallel [flags] < tasks_config
 | **Claude** | `--backend claude` | Documentation, prompt engineering, clear-requirement features |
 | **Gemini** | `--backend gemini` | UI/UX prototyping, design system implementation |
 | **OpenCode** | `--backend opencode` | Lightweight tasks, minimal feature set |
+
+## Permission and Sandbox Defaults
+
+Claude skips permission prompts and Codex bypasses approvals/sandbox by default so nested agents can run autonomously. To restore Claude prompts, use `--skip-permissions=false` (or `--dangerously-skip-permissions=false`), a parallel task's `skip_permissions: false`, `CODEAGENT_SKIP_PERMISSIONS=false`, or `skip-permissions: false` in the Viper config file. Claude permission priority is explicit CLI flag > explicit per-task field > environment > config file > default (`true`); explicit `false` also overrides preset `yolo`. To disable Codex bypass, set `CODEX_BYPASS_SANDBOX=false`, including with a YOLO preset; there is no Codex bypass config key or CLI flag. Gemini always runs with `-y`; the wrapper has no switch to disable it.
+
+For backend/model selection, single-task priority is explicit CLI flag > matching-backend agent preset > environment > config file > default. Parallel priority is explicit per-task field > global CLI flag (`--backend`/`--model`) > matching-backend agent preset > environment > config file > default. A global `--model` applies to every task without an explicit model; environment/config model defaults apply only to tasks using the global backend. Model, reasoning, and YOLO preset settings apply only when the selected backend matches the preset (case-insensitively).
 
 ## Agent Presets
 
@@ -345,7 +353,7 @@ SESSION_ID: 019a7247-ac9d-71f3-89e2-a823dbd8fd14
 |----------|-------------|---------|
 | `CODEAGENT_SKIP_PERMISSIONS` | Skip Claude backend permission prompts (`true`/`false`) | true |
 | `CODEX_BYPASS_SANDBOX` | Control Codex sandbox bypass (`true`/`false`) | true |
-| `CODEAGENT_MAX_PARALLEL_WORKERS` | Max concurrent parallel workers (0=unlimited, max 100) | 0 |
+| `CODEAGENT_MAX_PARALLEL_WORKERS` | Max concurrent parallel workers (0=unlimited, max 100) | 10 |
 | `CODEAGENT_TMPDIR` | Custom temp directory for executable scripts | system temp |
 | `CODEAGENT_ASCII_MODE` | Use ASCII symbols (PASS/WARN/FAIL) instead of Unicode | false |
 

@@ -34,8 +34,8 @@ func TestRunSingleMode_UseStdin_TargetArgAndTaskText(t *testing.T) {
 		{name: "leading dash", cfgTask: "- task", isTerminal: true, wantUseStdin: true, wantTarget: "-", wantTaskText: "- task"},
 		{name: "cmd metacharacter", cfgTask: "A&B", isTerminal: true, wantUseStdin: true, wantTarget: "-", wantTaskText: "A&B"},
 		{
-			name:         "piped input forces stdin mode",
-			cfgTask:      "cli-task",
+			name:         "piped input without task forces stdin mode",
+			cfgTask:      "",
 			stdinData:    "piped task text",
 			isTerminal:   false,
 			wantUseStdin: true,

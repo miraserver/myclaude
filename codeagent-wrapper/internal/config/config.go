@@ -11,6 +11,7 @@ import (
 type Config struct {
 	Mode               string // "new" or "resume"
 	Task               string
+	TaskProvided       bool // An empty positional argument still must not read stdin.
 	SessionID          string
 	WorkDir            string
 	OutputPath         string
@@ -22,6 +23,7 @@ type Config struct {
 	PromptFile         string
 	PromptFileExplicit bool
 	SkipPermissions    bool
+	SkipPermissionsSet bool // Distinguishes an explicit false from an unset value.
 	Yolo               bool
 	MaxParallelWorkers int
 	AllowedTools       []string

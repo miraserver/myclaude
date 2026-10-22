@@ -20,7 +20,7 @@ Entry point: `cmd/codeagent-wrapper/main.go` (binary: `codeagent-wrapper`).
 - **Backend config**: `backends` section in `models.json` supports per-backend `base_url` / `api_key` injection
 - **Claude tool control**: `allowed_tools` / `disallowed_tools` to restrict available tools for Claude backend
 - **Stderr noise filtering**: Automatically filters noisy stderr output from Gemini and Codex backends
-- **Log cleanup**: `codeagent-wrapper cleanup` cleans old logs (logs written to system temp directory)
+- **Log cleanup**: `codeagent-wrapper cleanup` cleans old logs (uses the same resolved temp directory as logging, including `CODEAGENT_TMPDIR` and the `~/.codeagent/tmp` fallback)
 - **Cross-platform**: macOS / Linux / Windows
 
 ## Installation
@@ -77,7 +77,9 @@ Explicit stdin (using `-`):
 cat task.txt | codeagent-wrapper -
 ```
 
-Tasks beginning with `-` are sent through stdin automatically. In single-task mode, use `codeagent-wrapper -- "- task"` to pass such text as the task, or use stdin with `-`. To run a task whose text is exactly `cleanup` or `version`, pass it through stdin with `-`; those names are reserved subcommands.
+Positional task text takes priority over stdin. Piped input is read only when no task argument is supplied or when the task is explicit `-`.
+
+Tasks beginning with `-` are sent through stdin automatically. In single-task mode, use `codeagent-wrapper -- "- task"` to pass such text as the task, or use stdin with `-`. To run a task whose text is exactly `cleanup`, `version`, or Cobra's automatic `help`, pass it through stdin with `-`; those names are reserved subcommands.
 
 HEREDOC (recommended for multi-line tasks):
 
@@ -137,7 +139,7 @@ EOF
 | `--prompt-file <path>` | Read prompt from file |
 | `--skills <names>` | Comma-separated skill names for spec injection |
 | `--reasoning-effort <level>` | Reasoning effort (backend-specific) |
-| `--skip-permissions` | Skip permission prompts |
+| `--skip-permissions` | Claude: skip permission prompts (effective default: true; `=false` restores prompts) |
 | `--dangerously-skip-permissions` | Alias for `--skip-permissions` |
 | `--worktree` | Execute in a new git worktree (auto-generates task_id) |
 | `--parallel` | Parallel task mode (config from stdin) |
@@ -163,6 +165,10 @@ skip-permissions: false
 ```
 
 Can also be specified explicitly via `--config /path/to/config.yaml`.
+
+### Permission and Sandbox Defaults
+
+Claude skips permission prompts and Codex bypasses approvals/sandbox by default so nested agents can run autonomously. To restore Claude prompts, use `--skip-permissions=false` (or `--dangerously-skip-permissions=false`), a parallel task's `skip_permissions: false`, `CODEAGENT_SKIP_PERMISSIONS=false`, or `skip-permissions: false` in the Viper config file. Claude permission priority is explicit CLI flag > explicit per-task field > environment > config file > default (`true`); explicit `false` also overrides preset `yolo`. To disable Codex bypass, set `CODEX_BYPASS_SANDBOX=false`, including with a YOLO preset; there is no Codex bypass config key or CLI flag. Gemini always runs with `-y`; the wrapper has no switch to disable it.
 
 ### Environment Variables (`CODEAGENT_*`)
 
@@ -234,7 +240,7 @@ This project does not embed model capabilities. It requires the corresponding CL
 |---------|---------|-------|
 | `codex` | `codex e ...` | Adds `--dangerously-bypass-approvals-and-sandbox` by default; set `CODEX_BYPASS_SANDBOX=false` to disable |
 | `claude` | `claude -p ... --output-format stream-json` | Skips permissions; the nested claude loads the user's settings, CLAUDE.md and skills; set `CODEAGENT_SKIP_PERMISSIONS=false` to enable prompts; auto-reads env and model from `~/.claude/settings.json` |
-| `gemini` | `gemini -o stream-json -y ...` | Auto-loads env vars from `~/.gemini/.env` (GEMINI_API_KEY, GEMINI_MODEL, etc.) |
+| `gemini` | `gemini -o stream-json -y ...` | Always uses `-y` (automatic approval); auto-loads env vars from `~/.gemini/.env` (GEMINI_API_KEY, GEMINI_MODEL, etc.) |
 | `opencode` | `opencode run --format json` | — |
 
 ## Project Structure
@@ -277,4 +283,4 @@ CI uses GitHub Actions with Go 1.26 across Ubuntu, macOS, and Windows, as config
 
 Worktrees are retained with your changes; results show `Worktree: <path> (branch do/<id>)`. `--worktree` cannot be combined with `--parallel`; use `worktree: true` in each parallel task instead.
 
-Settings priority is explicit CLI flag (or parallel task field), then a matching-backend agent preset, then environment, then config file. Invalid `CODEAGENT_MAX_PARALLEL_WORKERS` values, including whitespace or leading zeros, use the default of 10. Parallel exit status comes from the first failed task in definition order. On Windows, `.cmd`/`.bat` backends reject remaining arguments containing `& | < > ^ % ! "`; put task text through stdin.
+For backend/model selection, single-task priority is explicit CLI flag > matching-backend agent preset > environment > config file > default. Parallel priority is explicit per-task field > global CLI flag (`--backend`/`--model`) > matching-backend agent preset > environment > config file > default. A global `--model` applies to every task without an explicit model; environment/config model defaults apply only to tasks using the global backend. Model, reasoning, and YOLO preset settings apply only when the selected backend matches the preset (case-insensitively). Invalid `CODEAGENT_MAX_PARALLEL_WORKERS` values, including whitespace or leading zeros, use the default of 10. Parallel exit status comes from the first failed task in definition order. On Windows, `.cmd`/`.bat` backends reject remaining arguments containing `& | < > ^ % ! "`; put task text through stdin.

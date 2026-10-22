@@ -8,9 +8,6 @@ import (
 )
 
 func TestEnsureExecutableTempDir_Override(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("ensureExecutableTempDir is no-op on Windows")
-	}
 	restore := captureTempEnv()
 	t.Cleanup(restore)
 

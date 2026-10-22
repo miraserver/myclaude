@@ -20,6 +20,7 @@ type Plan struct {
 
 type Command struct {
 	Task               string
+	TaskProvided       bool // An empty positional argument still must not read stdin.
 	WorkDir            string
 	Mode               string
 	SessionID          string
@@ -29,6 +30,7 @@ type Command struct {
 	Agent              string
 	Yolo               bool
 	SkipPermissions    bool
+	SkipPermissionsSet bool // Distinguishes an explicit false from an unset value.
 	Worktree           bool
 	AllowedTools       []string
 	DisallowedTools    []string
@@ -69,20 +71,21 @@ func PreparePlan(cmd Command, deps PrepareDeps) (Plan, error) {
 	}
 
 	taskSpec := Spec{
-		Task:            taskText,
-		WorkDir:         cmd.WorkDir,
-		Mode:            cmd.Mode,
-		SessionID:       cmd.SessionID,
-		Backend:         cmd.Backend,
-		Model:           cmd.Model,
-		ReasoningEffort: cmd.ReasoningEffort,
-		Agent:           cmd.Agent,
-		SkipPermissions: cmd.SkipPermissions,
-		Yolo:            cmd.Yolo,
-		Worktree:        cmd.Worktree,
-		AllowedTools:    cmd.AllowedTools,
-		DisallowedTools: cmd.DisallowedTools,
-		UseStdin:        useStdin,
+		Task:               taskText,
+		WorkDir:            cmd.WorkDir,
+		Mode:               cmd.Mode,
+		SessionID:          cmd.SessionID,
+		Backend:            cmd.Backend,
+		Model:              cmd.Model,
+		ReasoningEffort:    cmd.ReasoningEffort,
+		Agent:              cmd.Agent,
+		SkipPermissions:    cmd.SkipPermissions,
+		SkipPermissionsSet: cmd.SkipPermissionsSet,
+		Yolo:               cmd.Yolo,
+		Worktree:           cmd.Worktree,
+		AllowedTools:       cmd.AllowedTools,
+		DisallowedTools:    cmd.DisallowedTools,
+		UseStdin:           useStdin,
 	}
 
 	return Plan{

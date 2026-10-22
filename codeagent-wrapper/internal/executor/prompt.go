@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"unicode/utf8"
 )
 
 func ReadAgentPromptFile(path string, allowOutsideClaudeDir bool) (string, error) {
@@ -205,17 +206,23 @@ func ResolveSkillContent(skills []string, maxBudget int) string {
 			continue
 		}
 		body := stripYAMLFrontmatter(strings.TrimSpace(string(data)))
+		separatorCost := 0
+		if len(sections) > 0 {
+			separatorCost = 2 // strings.Join separator counts toward the budget.
+		}
 		tagOverhead := len("<skill name=\"\">") + len(name) + len("\n") + len("\n</skill>")
-		bodyBudget := remaining - tagOverhead
+		bodyBudget := remaining - tagOverhead - separatorCost
 		if bodyBudget <= 0 {
 			logWarn(fmt.Sprintf("skill %q: skipped, insufficient budget for tags", name))
 			break
 		}
-		if len(body) > bodyBudget {
-			logWarn(fmt.Sprintf("skill %q: truncated from %d to %d chars (budget)", name, len(body), bodyBudget))
-			body = body[:bodyBudget]
+		bodyRunes := utf8.RuneCountInString(body)
+		if bodyRunes > bodyBudget {
+			logWarn(fmt.Sprintf("skill %q: truncated from %d to %d chars (budget)", name, bodyRunes, bodyBudget))
+			body = string([]rune(body)[:bodyBudget])
+			bodyRunes = bodyBudget
 		}
-		remaining -= len(body) + tagOverhead
+		remaining -= bodyRunes + tagOverhead + separatorCost
 		sections = append(sections, "<skill name=\""+name+"\">\n"+body+"\n</skill>")
 		if remaining <= 0 {
 			break

@@ -75,15 +75,19 @@ func BuildParallelInput(cmd *cobra.Command, opts *Options, v *viper.Viper, deps 
 	}
 
 	return runtaskset.BuildInput{
-		BackendName:        backendName,
-		Model:              model,
-		OutputPath:         outputPath,
-		SummaryOnly:        summaryOnly,
-		SkipPermissions:    skipPermissions,
-		StdinData:          data,
-		MaxWorkers:         deps.ResolveMaxWorkers(v),
-		ReasoningEffort:    strings.TrimSpace(v.GetString("reasoning-effort")),
-		PromptFile:         promptFile,
-		PromptFileOverride: cmd.Flags().Changed("prompt-file"),
+		BackendName:             strings.ToLower(backendName),
+		BackendOverride:         cmd.Flags().Changed("backend"),
+		ModelOverride:           cmd.Flags().Changed("model"),
+		SkipPermissionsSet:      skipChanged || v.IsSet("skip-permissions"),
+		SkipPermissionsOverride: skipChanged,
+		Model:                   model,
+		OutputPath:              outputPath,
+		SummaryOnly:             summaryOnly,
+		SkipPermissions:         skipPermissions,
+		StdinData:               data,
+		MaxWorkers:              deps.ResolveMaxWorkers(v),
+		ReasoningEffort:         strings.TrimSpace(v.GetString("reasoning-effort")),
+		PromptFile:              promptFile,
+		PromptFileOverride:      cmd.Flags().Changed("prompt-file"),
 	}, nil
 }

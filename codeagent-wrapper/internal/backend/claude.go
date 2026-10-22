@@ -114,8 +114,12 @@ func buildClaudeArgs(cfg *config.Config, targetArg string) []string {
 		return nil
 	}
 	args := []string{"-p"}
-	// Default to skip permissions unless CODEAGENT_SKIP_PERMISSIONS=false
-	if cfg.SkipPermissions || cfg.Yolo || config.EnvFlagDefaultTrue("CODEAGENT_SKIP_PERMISSIONS") {
+	// Explicit settings take priority, including false; otherwise default on.
+	skipPermissions := cfg.SkipPermissions || config.EnvFlagDefaultTrue("CODEAGENT_SKIP_PERMISSIONS")
+	if cfg.SkipPermissionsSet {
+		skipPermissions = cfg.SkipPermissions
+	}
+	if skipPermissions {
 		args = append(args, "--dangerously-skip-permissions")
 	}
 

@@ -331,3 +331,17 @@ func TestOpencodeBackend_Interface(t *testing.T) {
 		t.Errorf("Command() = %q, want %q", backend.Command(), "opencode")
 	}
 }
+
+func TestCodexExplicitEnvironmentFalseOverridesPresetYolo(t *testing.T) {
+	for _, value := range []string{"false", "0", "no", "off"} {
+		t.Run(value, func(t *testing.T) {
+			t.Setenv("CODEX_BYPASS_SANDBOX", value)
+			args := (CodexBackend{}).BuildArgs(&config.Config{Yolo: true}, "task")
+			for _, arg := range args {
+				if arg == "--dangerously-bypass-approvals-and-sandbox" {
+					t.Fatalf("explicit false ignored: %v", args)
+				}
+			}
+		})
+	}
+}

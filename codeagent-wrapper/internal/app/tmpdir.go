@@ -15,14 +15,13 @@ const tmpDirEnvOverrideKey = "CODEAGENT_TMPDIR"
 var tmpDirExecutableCheckFn = canExecuteInDir
 
 func ensureExecutableTempDir() {
-	// Windows doesn't execute scripts via shebang, and os.TempDir semantics differ.
-	if runtime.GOOS == "windows" {
-		return
-	}
-
 	if override := strings.TrimSpace(os.Getenv(tmpDirEnvOverrideKey)); override != "" {
 		if resolved, err := resolvePathWithTilde(override); err == nil {
 			if err := os.MkdirAll(resolved, 0o700); err == nil {
+				if runtime.GOOS == "windows" {
+					setTempEnv(resolved)
+					return
+				}
 				if ok, _ := tmpDirExecutableCheckFn(resolved); ok {
 					setTempEnv(resolved)
 					return
@@ -30,6 +29,11 @@ func ensureExecutableTempDir() {
 			}
 		}
 		// Invalid override should not block execution; fall back to default behavior.
+	}
+
+	// Windows doesn't execute scripts via shebang, and os.TempDir semantics differ.
+	if runtime.GOOS == "windows" {
+		return
 	}
 
 	current := currentTempDirFromEnv()

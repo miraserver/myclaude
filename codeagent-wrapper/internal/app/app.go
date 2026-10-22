@@ -78,6 +78,7 @@ func scheduleStartupCleanup() {
 }
 
 func runCleanupMode() int {
+	ensureExecutableTempDir()
 	stats, err := appcleanup.Execute(appcleanup.Deps{Run: cleanupLogsFn})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Cleanup failed: %v\n", err)

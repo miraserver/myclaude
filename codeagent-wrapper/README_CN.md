@@ -20,7 +20,7 @@
 - **后端配置**：`models.json` 的 `backends` 节支持 per-backend 的 `base_url` / `api_key` 注入
 - **Claude 工具控制**：`allowed_tools` / `disallowed_tools` 限制 Claude 后端可用工具
 - **Stderr 降噪**：自动过滤 Gemini 和 Codex 后端的噪声 stderr 输出
-- **日志清理**：`codeagent-wrapper cleanup` 清理旧日志（日志写入系统临时目录）
+- **日志清理**：`codeagent-wrapper cleanup` 清理旧日志（与日志使用相同的临时目录解析，支持 `CODEAGENT_TMPDIR` 和 `~/.codeagent/tmp` 回退目录）
 - **跨平台**：支持 macOS / Linux / Windows
 
 ## 安装
@@ -135,7 +135,7 @@ EOF
 | `--prompt-file <path>` | 从文件读取 prompt |
 | `--skills <names>` | 逗号分隔的技能名，注入对应规范 |
 | `--reasoning-effort <level>` | 推理力度（后端相关） |
-| `--skip-permissions` | 跳过权限提示 |
+| `--skip-permissions` | Claude 跳过权限提示（实际默认 true；`=false` 恢复提示） |
 | `--dangerously-skip-permissions` | `--skip-permissions` 的别名 |
 | `--worktree` | 在新 git worktree 中执行（自动生成 task_id） |
 | `--parallel` | 并行任务模式（从 stdin 读取配置） |
@@ -161,6 +161,8 @@ skip-permissions: false
 ```
 
 也可以通过 `--config /path/to/config.yaml` 显式指定。
+
+Claude 默认跳过权限提示，Codex 默认绕过审批和沙箱，以支持嵌套 agent 自主执行。恢复 Claude 权限提示可使用 `--skip-permissions=false`（别名 `--dangerously-skip-permissions=false`）、并行任务字段 `skip_permissions: false`、环境变量 `CODEAGENT_SKIP_PERMISSIONS=false` 或 Viper 配置文件中的 `skip-permissions: false`。Claude 权限设置优先级：显式 CLI 参数 > 显式任务字段 > 环境变量 > 配置文件 > 默认值（`true`）；显式 `false` 也会覆盖预设的 `yolo`。关闭 Codex 绕过请设置 `CODEX_BYPASS_SANDBOX=false`，即使启用 YOLO 预设也生效；没有对应的 Codex 配置键或 CLI 参数。Gemini 始终使用 `-y` 自动批准，wrapper 不提供关闭选项。
 
 ### 环境变量（`CODEAGENT_*`）
 
@@ -273,6 +275,6 @@ CI 使用 GitHub Actions，按根目录 `.github/workflows/ci.yml` 配置，使�
 
 ## 执行行为
 
-以 `-` 开头的任务自动通过 stdin 发送；单任务可使用 `codeagent-wrapper -- "- task"` 或 stdin `-`。任务文本恰好为 `cleanup` 或 `version` 时，必须使用 stdin `-`，因为它们是保留子命令。
+以 `-` 开头的任务自动通过 stdin 发送；单任务可使用 `codeagent-wrapper -- "- task"` 或 stdin `-`。任务文本恰好为 `cleanup`、`version` 或 Cobra 自动提供的 `help` 时，必须使用 stdin `-`，因为它们是保留子命令。
 
-Worktree 会保留更改，结果显示路径和分支。`--worktree` 不能与 `--parallel` 同用；请在并行任务中设置 `worktree: true`。设置优先级：显式 CLI 参数（或并行任务字段）> 后端匹配的 agent 预设 > 环境变量 > 配置文件。无效 worker 值（包括空白或前导零）使用默认值 10。并行退出码取任务定义顺序中首个失败任务的退出码。Windows `.cmd`/`.bat` 后端会拒绝剩余参数中的 `& | < > ^ % ! "`；任务文本通过 stdin 传入。
+Worktree 会保留更改，结果显示路径和分支。`--worktree` 不能与 `--parallel` 同用；请在并行任务中设置 `worktree: true`。后端/模型的单任务优先级：显式 CLI 参数 > 后端匹配的 agent 预设 > 环境变量 > 配置文件 > 默认值。并行优先级：显式任务字段 > 全局 CLI 参数（`--backend`/`--model`）> 后端匹配的 agent 预设 > 环境变量 > 配置文件 > 默认值。全局 `--model` 应用于未显式指定模型的每个任务；环境/配置文件的模型默认值仅用于采用全局后端的任务。预设的模型、reasoning 和 YOLO 只在后端匹配时生效，后端名称不区分大小写。无效 worker 值（包括空白或前导零）使用默认值 10。并行退出码取任务定义顺序中首个失败任务的退出码。Windows `.cmd`/`.bat` 后端会拒绝剩余参数中的 `& | < > ^ % ! "`；任务文本通过 stdin 传入。

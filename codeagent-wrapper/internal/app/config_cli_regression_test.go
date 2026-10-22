@@ -75,7 +75,7 @@ func TestConfigCLIRegressions(t *testing.T) {
 				if backend == "claude" {
 					flag = "--dangerously-skip-permissions"
 				}
-				if strings.Contains(strings.Join(args, " "), flag) != (backend == "codex" || enabled) {
+				if strings.Contains(strings.Join(args, " "), flag) != (backend == "claude" && enabled) {
 					t.Fatalf("missing yolo flag: %v", args)
 				}
 			}

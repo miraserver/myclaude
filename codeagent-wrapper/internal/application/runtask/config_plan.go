@@ -5,6 +5,7 @@ import config "codeagent-wrapper/internal/config"
 func PrepareConfigPlan(cfg *config.Config, deps PrepareDeps) (Plan, error) {
 	return PreparePlan(Command{
 		Task:               cfg.Task,
+		TaskProvided:       cfg.TaskProvided,
 		WorkDir:            cfg.WorkDir,
 		Mode:               cfg.Mode,
 		SessionID:          cfg.SessionID,
@@ -13,6 +14,7 @@ func PrepareConfigPlan(cfg *config.Config, deps PrepareDeps) (Plan, error) {
 		ReasoningEffort:    cfg.ReasoningEffort,
 		Agent:              cfg.Agent,
 		SkipPermissions:    cfg.SkipPermissions,
+		SkipPermissionsSet: cfg.SkipPermissionsSet,
 		Yolo:               cfg.Yolo,
 		Worktree:           cfg.Worktree,
 		AllowedTools:       cfg.AllowedTools,

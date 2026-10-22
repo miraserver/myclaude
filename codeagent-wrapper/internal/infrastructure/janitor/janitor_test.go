@@ -1,7 +1,6 @@
 package janitor
 
 import (
-	"os"
 	"path/filepath"
 	"testing"
 )
@@ -25,12 +24,10 @@ func TestIsUnsafeFileAliasOnMissingPath(t *testing.T) {
 
 func TestCleanupOldLogsAliasSmoke(t *testing.T) {
 	tempDir := t.TempDir()
-	oldTmp := os.Getenv("TMPDIR")
+	// Windows uses TMP/TEMP rather than TMPDIR; isolate all platforms.
 	t.Setenv("TMPDIR", tempDir)
-	if oldTmp == "" {
-		t.Setenv("TMP", "")
-		t.Setenv("TEMP", "")
-	}
+	t.Setenv("TMP", tempDir)
+	t.Setenv("TEMP", tempDir)
 
 	stats, err := CleanupOldLogs()
 	if err != nil {

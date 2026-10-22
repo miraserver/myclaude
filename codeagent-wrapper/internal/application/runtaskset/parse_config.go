@@ -65,15 +65,19 @@ func ParseConfig(data []byte) (*ParallelConfig, error) {
 				task.SessionID = value
 				task.Mode = "resume"
 			case "backend":
-				task.Backend = value
+				task.Backend = strings.ToLower(value)
+				task.BackendExplicit = value != ""
 			case "model":
 				task.Model = value
+				task.ModelExplicit = value != ""
 			case "reasoning_effort":
 				task.ReasoningEffort = value
+				task.ReasoningExplicit = value != ""
 			case "agent":
 				agentSpecified = true
 				task.Agent = value
 			case "skip_permissions", "skip-permissions":
+				task.SkipPermissionsSet = true
 				if value == "" {
 					task.SkipPermissions = true
 					continue
@@ -120,6 +124,8 @@ func ParseConfig(data []byte) (*ParallelConfig, error) {
 			if err != nil {
 				return nil, fmt.Errorf("task block #%d failed to resolve agent %q: %w", taskIndex, task.Agent, err)
 			}
+			backend = strings.ToLower(strings.TrimSpace(backend))
+			task.PresetBackend = backend
 			if task.Backend == "" {
 				task.Backend = backend
 			}

@@ -49,13 +49,13 @@ EOF
 | `--backend <name>` | Select backend (codex/claude/gemini/opencode) |
 | `--model <name>` | Override model for this invocation |
 | `--agent <name>` | Agent preset name (from ~/.codeagent/models.json) |
-| `--config <path>` | Path to models.json config file |
+| `--config <path>` | Viper config file path (default: `~/.codeagent/config.*`); agent presets always use `~/.codeagent/models.json` |
 | `--cleanup` | Clean up historical log files and exit |
 | `--worktree` | Execute in a new git worktree (auto-generates task ID) |
 | `--skills <names>` | Comma-separated skill names for spec injection |
 | `--prompt-file <path>` | Read prompt from file |
 | `--reasoning-effort <level>` | Set reasoning effort (low/medium/high) |
-| `--skip-permissions` | Skip permission prompts |
+| `--skip-permissions` | Claude: skip permission prompts (effective default: true; use `=false` to restore prompts) |
 | `--parallel` | Enable parallel task execution |
 | `--full-output` | Show full output in parallel mode |
 | `--version`, `-v` | Print version and exit |
@@ -193,7 +193,7 @@ Log: /tmp/codeagent-zzz.log
 
 **Features:**
 - Automatic topological sorting
-- Unlimited concurrency for independent tasks
+- Up to 10 concurrent workers by default; set `CODEAGENT_MAX_PARALLEL_WORKERS=0` for unlimited concurrency (positive values are capped at 100)
 - Error isolation (failures don't stop other tasks)
 - Dependency blocking (skip if parent fails)
 
@@ -320,6 +320,10 @@ Error: dependency backend_1701234567 failed
 | 130 | Interrupted (Ctrl+C) |
 | * | Passthrough from backend process |
 
+## Permission and Sandbox Defaults
+
+Claude skips permission prompts and Codex bypasses approvals/sandbox by default so nested agents can run autonomously. To restore Claude prompts, use `--skip-permissions=false` (or `--dangerously-skip-permissions=false`), a parallel task's `skip_permissions: false`, `CODEAGENT_SKIP_PERMISSIONS=false`, or `skip-permissions: false` in the Viper config file. Claude permission priority is explicit CLI flag > explicit per-task field > environment > config file > default (`true`); explicit `false` also overrides preset `yolo`. To disable Codex bypass, set `CODEX_BYPASS_SANDBOX=false`, including with a YOLO preset; there is no Codex bypass config key or CLI flag. Gemini always runs with `-y`; the wrapper has no switch to disable it.
+
 ## Environment Variables
 
 | Variable | Default | Description |
@@ -442,13 +446,14 @@ EOF
 
 ## Execution behavior
 
-For tasks beginning with `-`, use `codeagent-wrapper -- "- task"` or stdin `-`; these tasks automatically use backend stdin. For literal `cleanup` or `version` tasks, use stdin `-` because these are subcommands. Worktrees are retained, and results show the path and branch. Use per-task `worktree: true` in parallel mode; `--worktree --parallel` is rejected.
+Positional task text takes priority over stdin. Piped input is read only when no task argument is supplied or when the task is explicit `-`.
 
-Settings resolve as explicit CLI flag (or parallel task field) > matching-backend agent preset > environment > config file. Invalid worker environment values (including whitespace and leading zeros) use 10. Parallel exit status follows the first failed task in definition order. Windows `.cmd`/`.bat` backends reject remaining argv containing `& | < > ^ % ! "`; task text is routed through stdin.
+For tasks beginning with `-`, use `codeagent-wrapper -- "- task"` or stdin `-`; these tasks automatically use backend stdin. For literal `cleanup`, `version`, or Cobra's automatic `help` tasks, use stdin `-` because these are subcommands. Worktrees are retained, and results show the path and branch. Use per-task `worktree: true` in parallel mode; `--worktree --parallel` is rejected.
+
+For backend/model selection, single-task priority is explicit CLI flag > matching-backend agent preset > environment > config file > default. Parallel priority is explicit per-task field > global CLI flag (`--backend`/`--model`) > matching-backend agent preset > environment > config file > default. A global `--model` applies to every task without an explicit model; environment/config model defaults apply only to tasks using the global backend. Model, reasoning, and YOLO preset settings apply only when the selected backend matches the preset (case-insensitively). Invalid worker environment values (including whitespace and leading zeros) use 10. Parallel exit status follows the first failed task in definition order. Windows `.cmd`/`.bat` backends reject remaining argv containing `& | < > ^ % ! "`; task text is routed through stdin.
 
 ## Further Reading
 
 - [Codex CLI Documentation](https://codex.docs)
 - [Claude CLI Documentation](https://claude.ai/docs)
 - [Gemini CLI Documentation](https://ai.google.dev/docs)
-- [Architecture Overview](./architecture.md)

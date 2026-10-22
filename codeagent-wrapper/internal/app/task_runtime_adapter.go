@@ -60,6 +60,14 @@ func resolveSingleTaskText(cmd runtask.Command) (taskText string, piped bool, er
 		return taskText, !isTerminal(), nil
 	}
 
+	// Positional tasks are authoritative; stdin may remain open indefinitely.
+	if cmd.TaskProvided || cmd.Task != "" {
+		if cmd.Task == "" {
+			return "", false, fmt.Errorf("task required")
+		}
+		return cmd.Task, false, nil
+	}
+
 	pipedTask, err := readPipedTask()
 	if err != nil {
 		return "", false, fmt.Errorf("failed to read piped stdin: %w", err)
@@ -67,7 +75,7 @@ func resolveSingleTaskText(cmd runtask.Command) (taskText string, piped bool, er
 	if pipedTask != "" {
 		return pipedTask, true, nil
 	}
-	return cmd.Task, false, nil
+	return "", false, fmt.Errorf("task required")
 }
 
 func applySingleTaskPromptAndSkills(cmd runtask.Command, taskText string) (string, error) {
@@ -93,14 +101,15 @@ func applySingleTaskPromptAndSkills(cmd runtask.Command, taskText string) (strin
 
 func buildSingleTaskCommandArgs(cmd runtask.Command, targetArg string) []string {
 	cfg := &config.Config{
-		Backend:         cmd.Backend,
-		Model:           cmd.Model,
-		ReasoningEffort: cmd.ReasoningEffort,
-		SkipPermissions: cmd.SkipPermissions,
-		Yolo:            cmd.Yolo,
-		Mode:            cmd.Mode,
-		SessionID:       cmd.SessionID,
-		WorkDir:         cmd.WorkDir,
+		Backend:            cmd.Backend,
+		Model:              cmd.Model,
+		ReasoningEffort:    cmd.ReasoningEffort,
+		SkipPermissions:    cmd.SkipPermissions,
+		SkipPermissionsSet: cmd.SkipPermissionsSet,
+		Yolo:               cmd.Yolo,
+		Mode:               cmd.Mode,
+		SessionID:          cmd.SessionID,
+		WorkDir:            cmd.WorkDir,
 	}
 	return buildCodexArgsFn(cfg, targetArg)
 }
