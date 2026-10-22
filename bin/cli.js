@@ -635,8 +635,9 @@ async function updateInstalledModules(installDir, tag, config, dryRun, explicitF
         let r;
         if (name.startsWith("skill:")) {
           const skillName = name.slice(6);
-          await copyDirRecursive(path.join(repoRoot, "skills", skillName), path.join(installDir, "skills", skillName), true);
-          r = { module: name, status: "installed", installed_at: new Date().toISOString(), operations: [{ type: "copy_dir", source: `skills/${skillName}`, target: `skills/${skillName}` }] };
+          const files = {};
+          await copyDirRecursive(path.join(repoRoot, "skills", skillName), path.join(installDir, "skills", skillName), true, files, installDir);
+          r = { files, module: name, status: "installed", installed_at: new Date().toISOString(), operations: [{ type: "copy_dir", source: `skills/${skillName}`, target: `skills/${skillName}` }] };
         } else r = await applyModule(name, config, repoRoot, installDir, true, tag, installState, explicitForce, offline);
         r.version = tag || "offline";
         upsertModuleStatus(installDir, r);
@@ -851,24 +852,33 @@ async function extractTarGz(archivePath, destDir) {
   }
 }
 
-async function copyFile(src, dst, force) {
+function fileHash(bytes) {
+  return crypto.createHash("sha256").update(bytes).digest("hex");
+}
+
+function relativeFilePath(installDir, target) {
+  return path.relative(installDir, target).split(path.sep).join("/");
+}
+
+async function copyFile(src, dst, force, files, installDir) {
   if (!force && fs.existsSync(dst)) return false;
   await fs.promises.mkdir(path.dirname(dst), { recursive: true });
   await fs.promises.copyFile(src, dst);
   const st = await fs.promises.stat(src);
   await fs.promises.chmod(dst, st.mode);
+  if (files) files[relativeFilePath(installDir, dst)] = fileHash(await fs.promises.readFile(dst));
   return true;
 }
 
-async function copyDirRecursive(src, dst, force) {
+async function copyDirRecursive(src, dst, force, files, installDir) {
   await fs.promises.mkdir(dst, { recursive: true });
 
   const entries = await fs.promises.readdir(src, { withFileTypes: true });
   for (const e of entries) {
     const s = path.join(src, e.name);
     const d = path.join(dst, e.name);
-    if (e.isDirectory()) await copyDirRecursive(s, d, force);
-    else if (e.isFile()) await copyFile(s, d, force);
+    if (e.isDirectory()) await copyDirRecursive(s, d, force, files, installDir);
+    else if (e.isFile()) await copyFile(s, d, force, files, installDir);
   }
 }
 
@@ -1058,6 +1068,7 @@ async function applyModule(moduleName, config, repoRoot, installDir, force, tag,
     module: moduleName,
     status: "success",
     operations: [],
+    files: {},
     installed_at: new Date().toISOString(),
   };
   const status = loadInstalledStatus(installDir);
@@ -1069,9 +1080,9 @@ async function applyModule(moduleName, config, repoRoot, installDir, force, tag,
     const type = op && op.type;
     try {
       if (type === "copy_file") {
-        await copyFile(path.join(repoRoot, op.source), path.join(installDir, op.target), force);
+        await copyFile(path.join(repoRoot, op.source), path.join(installDir, op.target), force, result.files, installDir);
       } else if (type === "copy_dir") {
-        await copyDirRecursive(path.join(repoRoot, op.source), path.join(installDir, op.target), force);
+        await copyDirRecursive(path.join(repoRoot, op.source), path.join(installDir, op.target), force, result.files, installDir);
       } else if (type === "merge_dir") {
         const installed = await mergeDir(path.join(repoRoot, op.source), installDir, force, moduleName, previouslyOwned, explicitForce);
         for (const rel of installed) mergeDirFiles.add(rel);
@@ -1177,30 +1188,10 @@ async function listSourceTree(srcDir, rel = "", files = [], dirs = []) {
   return { files, dirs };
 }
 
-async function removeCopyDirContents(srcDir, targetDir, dryRun) {
+async function removeCopyDirContents(srcDir, targetDir, removeFile, cleanupDirs) {
   const { files, dirs } = await listSourceTree(srcDir);
-  const removableFiles = [];
-  for (const rel of files) {
-    const target = path.join(targetDir, rel);
-    if (!fs.existsSync(target)) continue;
-    try {
-      const st = await fs.promises.lstat(target);
-      if (st.isFile() && (await fs.promises.readFile(target)).equals(await fs.promises.readFile(path.join(srcDir, rel)))) removableFiles.push(target);
-      else process.stdout.write(`Keeping ${target}: differs from the installed copy\n`);
-    } catch {
-      continue;
-    }
-  }
-
-  if (dryRun) {
-    for (const target of removableFiles) process.stdout.write(`- remove ${target}\n`);
-    return;
-  }
-
-  for (const target of removableFiles) await removePathIfExists(target);
-  for (const rel of dirs.sort((a, b) => b.length - a.length)) {
-    await tryRemoveEmptyDir(path.join(targetDir, rel));
-  }
+  for (const rel of files) await removeFile(path.join(targetDir, rel), path.join(srcDir, rel), true);
+  for (const rel of dirs) cleanupDirs.add(path.join(targetDir, rel));
 }
 
 async function uninstallModule(moduleName, config, repoRoot, installDir, dryRun) {
@@ -1215,27 +1206,52 @@ async function uninstallModule(moduleName, config, repoRoot, installDir, dryRun)
   const status = loadInstalledStatus(installDir);
   const moduleStatus = (status.modules && status.modules[moduleName]) || {};
   const recordedMerge = Array.isArray(moduleStatus.merge_dir_files) ? moduleStatus.merge_dir_files : null;
+  const recordedFiles = isPlainObject(moduleStatus.files) ? moduleStatus.files : {};
+  const keptFiles = {};
+  const processed = new Set();
+  const cleanupDirs = new Set();
+  async function removeFile(target, source, requireSource = false) {
+    const rel = relativeFilePath(installDir, target);
+    if (processed.has(rel)) return;
+    processed.add(rel);
+    if (!fs.existsSync(target)) return;
+    const recorded = Object.prototype.hasOwnProperty.call(recordedFiles, rel);
+    let expected = recorded ? recordedFiles[rel] : undefined;
+    if (!recorded && source) {
+      try { expected = fileHash(await fs.promises.readFile(source)); } catch {
+        // Directory copies historically preserve files when comparison is unavailable.
+        // Single-file copies retain their legacy source-unavailable removal behavior.
+        if (requireSource) return;
+      }
+    }
+    if (expected !== undefined && (!fs.lstatSync(target).isFile() ||
+        fileHash(await fs.promises.readFile(target)) !== expected)) {
+      process.stdout.write(`Keeping ${target}: differs from the installed copy\n`);
+      keptFiles[rel] = expected;
+      return;
+    }
+    if (dryRun) process.stdout.write(`- remove ${target}\n`);
+    else await removePathIfExists(target);
+  }
+
+  // Recorded ownership survives source files and entire operations being removed upstream.
+  for (const rel of Object.keys(recordedFiles)) {
+    const target = path.resolve(installDir, rel);
+    const relative = path.relative(path.resolve(installDir), target);
+    if (!relative || relative.startsWith("..") || path.isAbsolute(relative)) continue;
+    await removeFile(target);
+    for (let dir = path.dirname(target); dir !== path.resolve(installDir); dir = path.dirname(dir)) {
+      cleanupDirs.add(dir);
+    }
+  }
 
   for (const op of ops) {
     const type = op && op.type;
     if (type === "copy_file") {
       const target = typeof op.target === "string" ? op.target : "";
       if (!target) continue;
-      const p = path.join(installDir, target);
-      if (fs.existsSync(p) && typeof op.source === "string" && op.source) {
-        let sourceBytes;
-        try {
-          sourceBytes = await fs.promises.readFile(path.join(repoRoot, op.source));
-        } catch {
-          // Preserve legacy removal when the source is unavailable.
-        }
-        if (sourceBytes !== undefined && !(await fs.promises.readFile(p)).equals(sourceBytes)) {
-          process.stdout.write(`Keeping ${p}: differs from the installed copy\n`);
-          continue;
-        }
-      }
-      if (dryRun) process.stdout.write(`- remove ${p}\n`);
-      else await removePathIfExists(p);
+      await removeFile(path.join(installDir, target),
+        typeof op.source === "string" && op.source ? path.join(repoRoot, op.source) : null);
       continue;
     }
 
@@ -1245,7 +1261,7 @@ async function uninstallModule(moduleName, config, repoRoot, installDir, dryRun)
       const srcDir = typeof op.source === "string" ? path.join(repoRoot, op.source) : "";
       const targetDir = path.join(installDir, target);
       if (srcDir && await dirExists(srcDir)) {
-        await removeCopyDirContents(srcDir, targetDir, dryRun);
+        await removeCopyDirContents(srcDir, targetDir, removeFile, cleanupDirs);
       } else {
         process.stdout.write(`Keeping ${targetDir}: source unavailable\n`);
       }
@@ -1305,14 +1321,18 @@ async function uninstallModule(moduleName, config, repoRoot, installDir, dryRun)
     }
   }
 
+  const remaining = Object.keys(keptFiles);
+  if (remaining.length) process.stdout.write(`Module ${moduleName} partially uninstalled; remaining files: ${remaining.join(", ")}\n`);
   if (dryRun) return;
+  for (const dir of [...cleanupDirs].sort((a, b) => b.length - a.length)) await tryRemoveEmptyDir(dir);
   const pluginRoots = ops
     .filter((op) => op && op.type === "copy_dir" && typeof op.target === "string" && op.target &&
       typeof op.source === "string" && fs.existsSync(path.join(repoRoot, op.source, "hooks", "hooks.json")))
     .map((op) => path.resolve(installDir, op.target).replace(/\\/g, "/"));
   unmergeHooksFromSettings(moduleName, installDir, pluginRoots);
   unmergeModuleAgents(moduleName, config, installDir);
-  deleteModuleStatus(installDir, moduleName);
+  if (remaining.length) upsertModuleStatus(installDir, { ...moduleStatus, module: moduleName, status: "partial_uninstall", files: keptFiles });
+  else deleteModuleStatus(installDir, moduleName);
 }
 
 async function installDefaultConfigs(installDir, repoRoot, withClaudeMd = false) {
@@ -1474,13 +1494,15 @@ async function installSelected(picks, tag, config, installDir, force, dryRun, of
         if (WRAPPER_REQUIRED_SKILLS.has(p.skillName)) await ensureWrapperInstalled();
         process.stdout.write(`Installing skill: ${p.skillName}\n`);
         const skillSource = `skills/${p.skillName}`;
+        const files = {};
         await copyDirRecursive(
           path.join(repoRoot, "skills", p.skillName),
           path.join(installDir, "skills", p.skillName),
-          force
+          force, files, installDir
         );
         upsertModuleStatus(installDir, {
           module: `skill:${p.skillName}`,
+          files,
           status: "installed",
           version: tag || "offline",
           installed_at: new Date().toISOString(),
@@ -1623,14 +1645,14 @@ async function main() {
   for (const item of items) {
     const key = item.kind === "module" ? item.moduleName : item.kind === "skill" ? `skill:${item.skillName}` : null;
     const entry = key && installedEntries[key];
-    if (entry) item.label += ` [installed${entry.version ? ` ${entry.version}` : ""}]`;
+    if (entry) item.label += ` [${entry.status === "partial_uninstall" ? "partially uninstalled" : "installed"}${entry.version ? ` ${entry.version}` : ""}]`;
   }
   if (args.list) {
     const installed = loadInstalledStatus(installDir).modules;
     for (const it of items) {
       const key = it.kind === "module" ? it.moduleName : it.kind === "skill" ? `skill:${it.skillName}` : null;
       const entry = key && installed[key];
-      process.stdout.write(`${it.id}${entry ? ` (installed${entry.version ? `, ${entry.version}` : ""})` : ""}\n`);
+      process.stdout.write(`${it.id}${entry ? ` (${entry.status === "partial_uninstall" ? "partially uninstalled" : "installed"}${entry.version ? `, ${entry.version}` : ""})` : ""}\n`);
     }
     return;
   }

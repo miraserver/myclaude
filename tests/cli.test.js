@@ -326,10 +326,12 @@ test("standalone skill install, update, and uninstall track byte-equal ownership
   await sandbox.module.exports.testInstallSelected([{ kind: "skill", skillName: "solo" }], null, {}, installDir, false, false, true);
   let entry = loadInstalledStatus(installDir).modules["skill:solo"];
   assert.equal(entry.version, "offline");
+  assert.deepEqual(entry.files, { "skills/solo/SKILL.md": sha256("v1") });
   fs.writeFileSync(path.join(repo, "skills", "solo", "SKILL.md"), "v2");
   await sandbox.module.exports.testUpdate(installDir, null, { modules: {} }, false, false, true);
   assert.equal(fs.readFileSync(path.join(installDir, "skills", "solo", "SKILL.md"), "utf8"), "v2");
   assert.equal(loadInstalledStatus(installDir).modules["skill:solo"].version, "offline");
+  assert.deepEqual(loadInstalledStatus(installDir).modules["skill:solo"].files, { "skills/solo/SKILL.md": sha256("v2") });
   fs.writeFileSync(path.join(installDir, "skills", "solo", "user.txt"), "preserve");
   await sandbox.module.exports.testUninstall("skill:solo", {}, repo, installDir, false);
   assert.equal(fs.existsSync(path.join(installDir, "skills", "solo", "SKILL.md")), false);
@@ -1579,4 +1581,184 @@ test("installer tests never modify the real home models.json", () => {
   const hash = crypto.createHash("sha256").update(fs.readFileSync(originalModelsPath)).digest("hex");
   assert.equal(hash, originalModelsSnapshot.hash);
   assert.equal(stat.mtimeMs, originalModelsSnapshot.mtimeMs);
+});
+
+
+const sha256 = (bytes) => crypto.createHash("sha256").update(bytes).digest("hex");
+
+for (const name of ["demo", "skill:solo"]) {
+  test(`partial uninstall of ${name} skips updates, labels menus, and permits normal install`, async (t) => {
+    const f = fixture(t);
+    const repo = path.join(f.installDir, "repo");
+    fs.mkdirSync(path.join(repo, "skills", "solo"), { recursive: true });
+    fs.writeFileSync(path.join(repo, "skills", "solo", "SKILL.md"), "release");
+    const config = { modules: { demo: { operations: [
+      { type: "copy_dir", source: "skills/solo", target: "skills/solo" },
+    ] } } };
+    const retained = { module: name, status: "partial_uninstall", version: "v1", files: { "skills/solo/SKILL.md": sha256("release") } };
+    fs.mkdirSync(path.join(f.installDir, "skills", "solo"), { recursive: true });
+    fs.writeFileSync(path.join(f.installDir, "skills", "solo", "SKILL.md"), "user edit");
+    upsertModuleStatus(f.installDir, retained);
+    let output = "";
+    const sandbox = {
+      module: { exports: {} }, __dirname: path.join(repo, "bin"), require,
+      process: { platform: process.platform, env: { ...process.env }, cwd: () => process.cwd(),
+        stdout: { write(s) { output += s; } }, stderr: { write() {} } },
+    };
+    vm.runInNewContext(fs.readFileSync(cliPath, "utf8") + `
+      repoRootFromHere = () => ${JSON.stringify(repo)};
+      readLocalConfig = () => (${JSON.stringify(config)});
+      listLocalSkills = () => ["solo"];
+      promptMultiSelect = async (items) => { module.exports.items = items; return []; };
+      module.exports.main = main;
+      module.exports.install = installSelected;
+    `, sandbox);
+    async function run(...args) {
+      output = "";
+      sandbox.process.argv = ["node", cliPath, "--offline", "--install-dir", f.installDir, ...args];
+      await sandbox.module.exports.main();
+      return output;
+    }
+    for (const args of [["--update"], ["--module", name, "--update"]]) {
+      const before = fs.readFileSync(path.join(f.installDir, "installed_modules.json"));
+      assert.ok((await run(...args)).includes(`${name} is not installed; run without --update to install it`));
+      assert.deepEqual(fs.readFileSync(path.join(f.installDir, "installed_modules.json")), before);
+      assert.equal(fs.readFileSync(path.join(f.installDir, "skills", "solo", "SKILL.md"), "utf8"), "user edit");
+    }
+    const id = name.startsWith("skill:") ? name : `module:${name}`;
+    assert.ok((await run("--list")).includes(`${id} (partially uninstalled, v1)`));
+    await run();
+    assert.ok(sandbox.module.exports.items.find(item => item.id === id).label.endsWith(" [partially uninstalled v1]"));
+    // Normal install replaces the retained status, using the existing install path.
+    const pick = name.startsWith("skill:") ? { kind: "skill", skillName: "solo" } : { kind: "module", moduleName: name };
+    await sandbox.module.exports.install([pick], null, config, f.installDir, true, false, true);
+    assert.ok(["installed", "success"].includes(loadInstalledStatus(f.installDir).modules[name].status));
+    assert.equal(fs.readFileSync(path.join(f.installDir, "skills", "solo", "SKILL.md"), "utf8"), "release");
+  });
+}
+
+for (const kind of ["module", "standalone skill"]) {
+  test(`${kind} records written hashes and uninstalls across source versions with retryable partial status`, async (t) => {
+    const f = fixture(t);
+    const repo = path.join(f.installDir, "repo");
+    const source = path.join(repo, "skills", "solo");
+    fs.mkdirSync(path.join(source, "obsolete"), { recursive: true });
+    const originals = {
+      "SKILL.md": Buffer.from([0, 255, 13, 10]),
+      "obsolete/removed.md": Buffer.from("removed upstream"),
+      "edited.md": Buffer.from("installed original"),
+    };
+    for (const [rel, bytes] of Object.entries(originals)) fs.writeFileSync(path.join(source, rel), bytes);
+    fs.writeFileSync(path.join(source, "skipped.md"), "source");
+    fs.mkdirSync(path.join(f.installDir, "skills", "solo"), { recursive: true });
+    fs.writeFileSync(path.join(f.installDir, "skills", "solo", "skipped.md"), "user existing");
+    fs.writeFileSync(path.join(repo, "agent.md"), "old agent");
+    const config = { modules: { demo: { operations: [
+      { type: "copy_dir", source: "skills/solo", target: "skills/solo" },
+      { type: "copy_file", source: "agent.md", target: "agents/demo.md" },
+    ] } } };
+    const name = kind === "module" ? "demo" : "skill:solo";
+    const sandbox = {
+      module: { exports: {} }, __dirname: path.join(repo, "bin"), require,
+      process: { platform: process.platform, env: { ...process.env }, stdout: { write() {} }, stderr: { write() {} } },
+    };
+    vm.runInNewContext(fs.readFileSync(cliPath, "utf8") + `
+      repoRootFromHere = () => ${JSON.stringify(repo)};
+      module.exports.install = installSelected;
+    `, sandbox);
+    if (kind === "module") {
+      upsertModuleStatus(f.installDir, await applyModule(name, config, repo, f.installDir, false));
+    } else {
+      await sandbox.module.exports.install([{ kind: "skill", skillName: "solo" }], null, {}, f.installDir, false, false, true);
+    }
+    const expected = Object.fromEntries(Object.entries(originals).map(([rel, bytes]) => [`skills/solo/${rel}`, sha256(bytes)]));
+    if (kind === "module") expected["agents/demo.md"] = sha256("old agent");
+    assert.deepEqual(loadInstalledStatus(f.installDir).modules[name].files, expected);
+
+    fs.writeFileSync(path.join(source, "SKILL.md"), "new release");
+    fs.unlinkSync(path.join(source, "obsolete", "removed.md"));
+    fs.writeFileSync(path.join(repo, "agent.md"), "new agent");
+    // A skipped file remains outside this regression's ownership checks.
+    fs.unlinkSync(path.join(source, "skipped.md"));
+    fs.writeFileSync(path.join(f.installDir, "skills", "solo", "edited.md"), "user edit");
+    const statusPath = path.join(f.installDir, "installed_modules.json");
+    const before = fs.readFileSync(statusPath);
+    let dryOutput = "";
+    let realOutput = "";
+    const write = process.stdout.write;
+    try {
+      process.stdout.write = (value) => { dryOutput += value; return true; };
+      await uninstallModule(name, config, repo, f.installDir, true);
+      assert.deepEqual(fs.readFileSync(statusPath), before);
+      for (const [rel, bytes] of Object.entries(originals)) {
+        assert.deepEqual(fs.readFileSync(path.join(f.installDir, "skills", "solo", rel)),
+          rel === "edited.md" ? Buffer.from("user edit") : bytes);
+      }
+      if (kind === "module") assert.equal(fs.readFileSync(path.join(f.installDir, "agents", "demo.md"), "utf8"), "old agent");
+      process.stdout.write = (value) => { realOutput += value; return true; };
+      await uninstallModule(name, config, repo, f.installDir, false);
+    } finally { process.stdout.write = write; }
+    assert.equal(realOutput, dryOutput.replace(/- remove .*\n/g, ""));
+    assert.match(realOutput, /Keeping .*edited.md: differs from the installed copy/);
+    assert.match(realOutput, /partially uninstalled; remaining files: skills\/solo\/edited.md/);
+    assert.equal(fs.existsSync(path.join(f.installDir, "skills", "solo", "SKILL.md")), false);
+    assert.equal(fs.existsSync(path.join(f.installDir, "skills", "solo", "obsolete")), false);
+    if (kind === "module") assert.equal(fs.existsSync(path.join(f.installDir, "agents", "demo.md")), false);
+    assert.deepEqual(loadInstalledStatus(f.installDir).modules[name].files, {
+      "skills/solo/edited.md": sha256("installed original"),
+    });
+    const previous = JSON.parse(before).modules[name];
+    assert.deepEqual(loadInstalledStatus(f.installDir).modules[name], {
+      ...previous, status: "partial_uninstall", files: { "skills/solo/edited.md": sha256("installed original") },
+    });
+    assert.equal(fs.readFileSync(path.join(f.installDir, "skills", "solo", "skipped.md"), "utf8"), "user existing");
+    // The retained install hash makes retry independent of another release change.
+    fs.rmSync(source, { recursive: true });
+    fs.writeFileSync(path.join(f.installDir, "skills", "solo", "edited.md"), "installed original");
+    sandbox.process.argv = ["node", cliPath, "uninstall", "--module", name, "--install-dir", f.installDir, "--yes"];
+    sandbox.process.cwd = () => process.cwd();
+    vm.runInNewContext(`readLocalConfig = () => (${JSON.stringify(config)}); module.exports.main = main;`, sandbox);
+    await sandbox.module.exports.main();
+    assert.equal(loadInstalledStatus(f.installDir).modules[name], undefined);
+    assert.equal(fs.existsSync(path.join(f.installDir, "skills", "solo", "edited.md")), false);
+  });
+}
+
+test("legacy copy entries retain source comparison and update refreshes hashes", async (t) => {
+  const f = fixture(t);
+  const repo = path.join(f.installDir, "repo");
+  fs.mkdirSync(path.join(repo, "payload"), { recursive: true });
+  fs.writeFileSync(path.join(repo, "payload", "SKILL.md"), "release B");
+  fs.writeFileSync(path.join(repo, "agent.md"), "release B agent");
+  const config = { modules: { demo: { operations: [
+    { type: "copy_dir", source: "payload", target: "skills/demo" },
+    { type: "copy_file", source: "agent.md", target: "agents/demo.md" },
+  ] } } };
+  fs.mkdirSync(path.join(f.installDir, "skills", "demo"), { recursive: true });
+  fs.mkdirSync(path.join(f.installDir, "agents"));
+  fs.writeFileSync(path.join(f.installDir, "skills", "demo", "SKILL.md"), "release A");
+  fs.writeFileSync(path.join(f.installDir, "agents", "demo.md"), "release B agent");
+  upsertModuleStatus(f.installDir, { module: "demo", status: "success" });
+  assert.deepEqual(readInstalledModuleNamesFromStatus(f.installDir), ["demo"]);
+  await uninstallModule("demo", config, repo, f.installDir, false);
+  assert.equal(fs.readFileSync(path.join(f.installDir, "skills", "demo", "SKILL.md"), "utf8"), "release A");
+  assert.equal(fs.existsSync(path.join(f.installDir, "agents", "demo.md")), false);
+  assert.deepEqual(loadInstalledStatus(f.installDir).modules.demo.files, { "skills/demo/SKILL.md": sha256("release B") });
+  const sandbox = {
+    module: { exports: {} }, __dirname: path.join(repo, "bin"), require,
+    process: { platform: process.platform, env: { ...process.env }, stdout: { write() {} } },
+  };
+  vm.runInNewContext(fs.readFileSync(cliPath, "utf8") + `
+    repoRootFromHere = () => ${JSON.stringify(repo)};
+    module.exports.update = updateInstalledModules;
+  `, sandbox);
+  for (const legacy of [true, false]) {
+    if (legacy) upsertModuleStatus(f.installDir, { module: "demo", status: "success" });
+    else fs.writeFileSync(path.join(repo, "payload", "SKILL.md"), "release C");
+    await sandbox.module.exports.update(f.installDir, null, config, false, false, true);
+    assert.deepEqual(loadInstalledStatus(f.installDir).modules.demo.files, {
+      "skills/demo/SKILL.md": sha256(legacy ? "release B" : "release C"),
+      "agents/demo.md": sha256("release B agent"),
+    });
+  }
 });
