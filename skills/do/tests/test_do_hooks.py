@@ -39,7 +39,7 @@ def python_command(code):
 class DoHookTests(unittest.TestCase):
     def setUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()
-        self.project = Path(self.temp_dir.name)
+        self.project = Path(self.temp_dir.name).resolve()
         self.home = self.project / "isolated-home"
         self.home.mkdir()
         (self.project / ".claude").mkdir()

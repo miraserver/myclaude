@@ -19,7 +19,7 @@ class DoModelsTests(unittest.TestCase):
     def setUp(self):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
-        self.home = Path(temporary.name)
+        self.home = Path(temporary.name).resolve()
         for patcher in (mock.patch.object(installer.Path, "home", return_value=self.home),
                         mock.patch.dict(os.environ, {"HOME": str(self.home), "USERPROFILE": str(self.home),
                                                     "CLAUDE_PROJECT_DIR": str(self.home)})):
