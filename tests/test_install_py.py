@@ -53,6 +53,30 @@ class InstallerJsonTests(unittest.TestCase):
                 self.root / "bin" / "codeagent-wrapper",
             )
 
+    def test_course_subagent_install_and_uninstall_preserve_foreign_agent(self):
+        config = json.loads((ROOT / "config.json").read_text(encoding="utf-8-sig"))
+        course = config["modules"]["course"]
+        ctx = {**self.ctx, "config_dir": ROOT, "_wrapper_installed": True}
+        agent = self.root / "agents" / "dev-plan-generator.md"
+        other = self.root / "agents" / "other.md"
+        other.parent.mkdir(parents=True)
+        other.write_bytes(b"foreign agent\n")
+
+        # Skip the binary installer while exercising the real course operations.
+        with mock.patch.object(installer.subprocess, "Popen") as popen:
+            result = installer.execute_module("course", course, ctx)
+        popen.assert_not_called()
+        self.assertEqual(result["status"], "success")
+        self.assertEqual(
+            agent.read_bytes(),
+            (ROOT / "skills/dev/agents/dev-plan-generator.md").read_bytes(),
+        )
+
+        result = installer.uninstall_module("course", course, ctx)
+        self.assertEqual(result["status"], "success")
+        self.assertFalse(agent.exists())
+        self.assertEqual(other.read_bytes(), b"foreign agent\n")
+
     def assert_corrupt_unchanged(self, path, action):
         path.parent.mkdir(parents=True, exist_ok=True)
         for content in (b'{"user": true,', b'\xef\xbb\xbf{"user":', b'\xff'):
@@ -63,6 +87,36 @@ class InstallerJsonTests(unittest.TestCase):
                 self.assertIn(str(path), str(raised.exception))
                 self.assertIn("Invalid JSON", str(raised.exception))
                 self.assertEqual(path.read_bytes(), content)
+
+    def test_copy_file_uninstall_checks_source_bytes(self):
+        for scenario in ("identical", "user", "missing", "missing source", "unreadable source"):
+            with self.subTest(scenario=scenario), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                ctx = {**self.ctx, "install_dir": root / "install", "config_dir": root}
+                source = root / "source.md"
+                target = ctx["install_dir"] / "agents/dev-plan-generator.md"
+                source.write_bytes(b"\x00\xff\r\n")
+                target.parent.mkdir(parents=True)
+                op = {"type": "copy_file", "source": "source.md", "target": "agents/dev-plan-generator.md"}
+                with mock.patch.dict("os.environ", {"HOME": str(root), "USERPROFILE": str(root)}):
+                    if scenario == "user":
+                        target.write_bytes(b"user agent\n")
+                    installer.op_copy_file(op, ctx)
+                    self.assertEqual(target.read_bytes(), b"user agent\n" if scenario == "user" else source.read_bytes())
+                    if scenario == "missing":
+                        target.unlink()
+                    if "source" in scenario:
+                        source.unlink()
+                    if scenario == "unreadable source":
+                        source.mkdir()
+                    result = installer.uninstall_module("demo", {"operations": [op]}, ctx)
+                self.assertEqual(result["status"], "success")
+                if scenario == "user":
+                    self.assertEqual(target.read_bytes(), b"user agent\n")
+                    self.assertIn(f"Keeping {target}: differs from the installed copy", self.ctx["log_file"].read_text(encoding="utf-8"))
+                    self.assertNotIn(str(target), result["removed_paths"])
+                else:
+                    self.assertFalse(target.exists())
 
     def test_bom_settings_load_and_hook_merge_preserve_user_keys(self):
         path = self.root / "settings.json"

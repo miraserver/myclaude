@@ -17,6 +17,48 @@ SPEC.loader.exec_module(uninstaller)
 
 
 class UninstallerWrapperTests(unittest.TestCase):
+    def test_copy_file_uninstall_checks_source_bytes(self):
+        installer_spec = importlib.util.spec_from_file_location("copy_file_installer", ROOT / "install.py")
+        installer = importlib.util.module_from_spec(installer_spec)
+        installer_spec.loader.exec_module(installer)
+        for scenario in ("identical", "user", "missing", "missing source", "unreadable source"):
+            with self.subTest(scenario=scenario), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                install_dir = root / "install"
+                source = root / "source.md"
+                target = install_dir / "agents/dev-plan-generator.md"
+                source.write_bytes(b"\x00\xff\r\n")
+                target.parent.mkdir(parents=True)
+                op = {"type": "copy_file", "source": "source.md", "target": "agents/dev-plan-generator.md"}
+                config = {"modules": {"demo": {"operations": [op]}}}
+                ctx = {"install_dir": install_dir, "config_dir": root, "log_file": root / "install.log"}
+                output = io.StringIO()
+                with mock.patch.dict("os.environ", {"HOME": str(root), "USERPROFILE": str(root)}), \
+                        mock.patch.object(uninstaller.Path, "home", return_value=root), \
+                        mock.patch.object(uninstaller, "__file__", str(root / "uninstall.py")), \
+                        mock.patch.object(uninstaller, "load_config", return_value=config):
+                    if scenario == "user":
+                        target.write_bytes(b"user agent\n")
+                    installer.op_copy_file(op, ctx)
+                    self.assertEqual(target.read_bytes(), b"user agent\n" if scenario == "user" else source.read_bytes())
+                    if scenario == "missing":
+                        target.unlink()
+                    if "source" in scenario:
+                        source.unlink()
+                    if scenario == "unreadable source":
+                        source.mkdir()
+                    (install_dir / "installed_modules.json").write_text(
+                        json.dumps({"modules": {"demo": {"status": "success"}}}), encoding="utf-8")
+                    with contextlib.redirect_stdout(output):
+                        self.assertEqual(uninstaller.main([
+                            "--install-dir", str(install_dir), "--module", "demo", "--yes"
+                        ]), 0)
+                if scenario == "user":
+                    self.assertEqual(target.read_bytes(), b"user agent\n")
+                    self.assertIn(f"Keeping {target}: differs from the installed copy", output.getvalue())
+                else:
+                    self.assertFalse(target.exists())
+
     def test_windows_wrapper_is_removed_without_touching_sibling_files(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

@@ -178,6 +178,12 @@
         },
         {
           "type": "copy_file",
+          "source": "skills/dev/agents/dev-plan-generator.md",
+          "target": "agents/dev-plan-generator.md",
+          "description": "Install dev-plan-generator subagent"
+        },
+        {
+          "type": "copy_file",
           "source": "skills/product-requirements/SKILL.md",
           "target": "skills/product-requirements/SKILL.md",
           "description": "Install product-requirements skill"

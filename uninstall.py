@@ -313,6 +313,11 @@ def main(argv: Optional[List[str]] = None) -> int:
             print(f"  ✓ Removed {install_dir}")
             removed.append(str(install_dir))
     else:
+        copy_file_sources = {}
+        for module_name in selected:
+            for op in config.get("modules", {}).get(module_name, {}).get("operations", []):
+                if op.get("type") == "copy_file" and op.get("target") and op.get("source"):
+                    copy_file_sources.setdefault(op["target"], []).append(Path(__file__).parent / op["source"])
         # Remove files/dirs in reverse order (files before parent dirs)
         for item in sorted(files_to_remove, key=lambda x: x.count("/"), reverse=True):
             path = install_dir / item
@@ -331,6 +336,18 @@ def main(argv: Optional[List[str]] = None) -> int:
             if not path.exists():
                 continue
             try:
+                keep = False
+                for source in copy_file_sources.get(item, []):
+                    try:
+                        source_bytes = source.read_bytes()
+                    except OSError:
+                        continue
+                    if path.read_bytes() != source_bytes:
+                        keep = True
+                        break
+                if keep:
+                    print(f"Keeping {path}: differs from the installed copy")
+                    continue
                 if path.is_dir():
                     shutil.rmtree(path)
                     print(f"  ✓ Removed {item}/")

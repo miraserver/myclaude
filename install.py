@@ -651,6 +651,14 @@ def uninstall_module(name: str, cfg: Dict[str, Any], ctx: Dict[str, Any]) -> Dic
             if op_type in ("copy_dir", "copy_file"):
                 target = (install_dir / op["target"]).expanduser().resolve()
                 if target.exists():
+                    if op_type == "copy_file" and op.get("source"):
+                        try:
+                            source_bytes = _source_path(op, ctx).read_bytes()
+                        except OSError:
+                            source_bytes = None
+                        if source_bytes is not None and target.read_bytes() != source_bytes:
+                            write_log({"level": "INFO", "message": f"Keeping {target}: differs from the installed copy"}, ctx)
+                            continue
                     if target.is_dir():
                         shutil.rmtree(target)
                     else:

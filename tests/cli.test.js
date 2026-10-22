@@ -544,6 +544,68 @@ test("module merge reconciles all hook sources together", (t) => {
   assert.equal(mergeModuleHooks("claudekit", mod, f.installDir), false);
 });
 
+test("course installs its discoverable subagent and uninstall preserves foreign agents", async (t) => {
+  const f = fixture(t);
+  const repoRoot = path.resolve(__dirname, "..");
+  const config = JSON.parse(fs.readFileSync(path.join(repoRoot, "config.json"), "utf8"));
+  const agent = path.join(f.installDir, "agents", "dev-plan-generator.md");
+  const other = path.join(f.installDir, "agents", "other.md");
+  fs.mkdirSync(path.dirname(other), { recursive: true });
+  fs.writeFileSync(other, "foreign agent\n");
+
+  // Offline mode exercises the real course operations without installing a binary.
+  const result = await applyModule("course", config, repoRoot, f.installDir,
+    false, null, null, false, true);
+  assert.equal(result.status, "success");
+  assert.deepEqual(fs.readFileSync(agent),
+    fs.readFileSync(path.join(repoRoot, "skills/dev/agents/dev-plan-generator.md")));
+  upsertModuleStatus(f.installDir, result);
+
+  await uninstallModule("course", config, repoRoot, f.installDir, false);
+  assert.equal(fs.existsSync(agent), false);
+  assert.equal(fs.readFileSync(other, "utf8"), "foreign agent\n");
+});
+
+for (const scenario of ["identical", "user", "missing", "missing source", "unreadable source"]) {
+  test(`copy_file uninstall: ${scenario}`, async (t) => {
+    const f = fixture(t);
+    for (const name of ["HOME", "USERPROFILE"]) {
+      const previous = process.env[name];
+      process.env[name] = f.installDir;
+      t.after(() => {
+        if (previous === undefined) delete process.env[name];
+        else process.env[name] = previous;
+      });
+    }
+    const source = path.join(f.installDir, "source.md");
+    const target = path.join(f.installDir, "agents", "dev-plan-generator.md");
+    const bytes = Buffer.from([0, 255, 13, 10]);
+    fs.writeFileSync(source, bytes);
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    const config = { modules: { demo: { operations: [
+      { type: "copy_file", source: "source.md", target: "agents/dev-plan-generator.md" },
+    ] } } };
+    if (scenario === "user") fs.writeFileSync(target, "user agent\n");
+    const result = await applyModule("demo", config, f.installDir, f.installDir,
+      false, null, null, false, true);
+    assert.equal(result.status, "success");
+    assert.deepEqual(fs.readFileSync(target), scenario === "user" ? Buffer.from("user agent\n") : bytes);
+    if (scenario === "missing") fs.unlinkSync(target);
+    if (scenario.includes("source")) fs.unlinkSync(source);
+    if (scenario === "unreadable source") fs.mkdirSync(source);
+    let output = "";
+    const write = process.stdout.write;
+    process.stdout.write = (value) => { output += value; return true; };
+    try {
+      await uninstallModule("demo", config, f.installDir, f.installDir, false);
+    } finally { process.stdout.write = write; }
+    if (scenario === "user") {
+      assert.equal(fs.readFileSync(target, "utf8"), "user agent\n");
+      assert.ok(output.includes(`Keeping ${target}: differs from the installed copy`));
+    } else assert.equal(fs.existsSync(target), false);
+  });
+}
+
 test("uninstall copy_dir preserves foreign files and hooks in shared target", async (t) => {
   const f = fixture(t);
   const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "myclaude-repo-"));

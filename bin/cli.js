@@ -1136,6 +1136,18 @@ async function uninstallModule(moduleName, config, repoRoot, installDir, dryRun)
       const target = typeof op.target === "string" ? op.target : "";
       if (!target) continue;
       const p = path.join(installDir, target);
+      if (fs.existsSync(p) && typeof op.source === "string" && op.source) {
+        let sourceBytes;
+        try {
+          sourceBytes = await fs.promises.readFile(path.join(repoRoot, op.source));
+        } catch {
+          // Preserve legacy removal when the source is unavailable.
+        }
+        if (sourceBytes !== undefined && !(await fs.promises.readFile(p)).equals(sourceBytes)) {
+          process.stdout.write(`Keeping ${p}: differs from the installed copy\n`);
+          continue;
+        }
+      }
       if (dryRun) process.stdout.write(`- remove ${p}\n`);
       else await removePathIfExists(p);
       continue;
