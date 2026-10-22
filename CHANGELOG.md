@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### 🐛 Bug Fixes
+
+- Lock harness/do registries and make them Windows-safe under concurrent sessions.
+- Track per-file SHA-256 ownership during uninstall so modules installed by older releases are removed fully; keep the registry entry for partial uninstalls.
+- Correct docs to select release content with `--tag vX.Y.Z`; repository `#ref` only selects installer code.
+
 ## [6.10.0] - 2026-10-22
 
 ### 🚀 Features

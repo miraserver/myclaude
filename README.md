@@ -89,7 +89,7 @@ npx github:miraserver/myclaude --with-claude-md
 
 ### Versions & releases
 
-Releases are tags named `vX.Y.Z` on [github.com/miraserver/myclaude](https://github.com/miraserver/myclaude/releases). Pin a version with `npx github:miraserver/myclaude#vX.Y.Z`; use `--update` to update installed modules to the latest release.
+Releases are tags named `vX.Y.Z` on [github.com/miraserver/myclaude](https://github.com/miraserver/myclaude/releases). Select release content (modules and `codeagent-wrapper`) with `--tag vX.Y.Z`, for example `npx github:miraserver/myclaude --tag vX.Y.Z` to install or roll back to that release. Without `--tag`, the latest release is used. A `#ref` after the repository only selects which installer code npx runs; use `--update` to update installed modules to the latest release.
 
 Release assets include `SHA256SUMS`, which `install.sh`, `install.bat`, and the npx installer use to verify downloaded files.
 
@@ -147,7 +147,7 @@ On Windows, the wrapper is installed to `%USERPROFILE%\bin\codeagent-wrapper.exe
 
 ## Security model
 
-Nested Claude, Codex, and Gemini backends skip permission prompts or sandbox protections by default. To restore Claude permission prompts, set `CODEAGENT_SKIP_PERMISSIONS=false`; to disable Codex sandbox bypass, set `CODEX_BYPASS_SANDBOX=false`. Also set `yolo: false` for relevant agents in `~/.codeagent/models.json` and remove explicit `--skip-permissions` flags or task-level `skip-permissions: true`. The Gemini wrapper always adds `-y` and currently has no opt-out; for permission prompts or sandboxing, run the Gemini CLI directly without `-y` and enable its sandbox.
+Nested Claude, Codex, and Gemini backends skip permission prompts or sandbox protections by default. To restore Claude permission prompts, set `CODEAGENT_SKIP_PERMISSIONS=false`; to disable Codex sandbox bypass, set `CODEX_BYPASS_SANDBOX=false`. These explicit false environment values override preset `yolo`; explicit Claude CLI flags or task-level permission settings take precedence over the environment. The Gemini wrapper always adds `-y` and currently has no opt-out; for permission prompts or sandboxing, run the Gemini CLI directly without `-y` and enable its sandbox.
 
 Harness hooks act only in projects activated through the harness skill and registered in `~/.claude/harness-state`. The `do` Stop hook only verifies tasks created by `/do` on this machine. Installers verify downloaded files against the release asset `SHA256SUMS` using SHA-256.
 

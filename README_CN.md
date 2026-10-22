@@ -230,7 +230,7 @@ npx github:miraserver/myclaude --with-claude-md
 
 ### 版本与发布
 
-发布版本使用 [github.com/miraserver/myclaude](https://github.com/miraserver/myclaude/releases) 上的 `vX.Y.Z` 标签。使用 `npx github:miraserver/myclaude#vX.Y.Z` 固定版本；使用 `--update` 将已安装模块更新到最新发布版本。
+发布版本使用 [github.com/miraserver/myclaude](https://github.com/miraserver/myclaude/releases) 上的 `vX.Y.Z` 标签。使用 `--tag vX.Y.Z` 选择发布内容（模块和 `codeagent-wrapper`），例如 `npx github:miraserver/myclaude --tag vX.Y.Z` 可安装或回退到该发布版本。不指定 `--tag` 时使用最新发布版本。仓库地址后的 `#ref` 仅选择 npx 运行的安装器代码；使用 `--update` 将已安装模块更新到最新发布版本。
 
 发布资产包含 `SHA256SUMS`，`install.sh`、`install.bat` 和 npx 安装器会用它校验下载文件。
 
@@ -289,7 +289,7 @@ npx github:miraserver/myclaude --force
 
 ## 安全模型
 
-嵌套的 Claude、Codex、Gemini 后端默认跳过权限提示或沙箱保护。要恢复 Claude 的权限提示，请设置 `CODEAGENT_SKIP_PERMISSIONS=false`；要关闭 Codex 的沙箱绕过，请设置 `CODEX_BYPASS_SANDBOX=false`。同时将 `~/.codeagent/models.json` 中相关智能体的 `yolo` 设为 `false`，并移除显式的 `--skip-permissions` 或任务配置中的 `skip-permissions: true`。Gemini 包装器始终添加 `-y`，目前没有关闭开关；需要权限提示或沙箱时，请直接运行 Gemini CLI，省略 `-y` 并启用沙箱。
+嵌套的 Claude、Codex、Gemini 后端默认跳过权限提示或沙箱保护。要恢复 Claude 的权限提示，请设置 `CODEAGENT_SKIP_PERMISSIONS=false`；要关闭 Codex 的沙箱绕过，请设置 `CODEX_BYPASS_SANDBOX=false`。这些显式为 false 的环境变量值会覆盖预设的 `yolo`；Claude 的显式 CLI 参数或任务级权限设置优先于环境变量。Gemini 包装器始终添加 `-y`，目前没有关闭开关；需要权限提示或沙箱时，请直接运行 Gemini CLI，省略 `-y` 并启用沙箱。
 
 Harness 钩子仅在通过 harness 技能激活并登记到 `~/.claude/harness-state` 的项目中生效。`do` 的 Stop 钩子仅验证本机通过 `/do` 创建的任务。安装器使用发布资产 `SHA256SUMS` 校验下载文件的 SHA-256。
 
