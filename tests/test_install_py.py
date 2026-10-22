@@ -23,7 +23,7 @@ class InstallerJsonTests(unittest.TestCase):
     def setUp(self):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
-        self.root = Path(temporary.name)
+        self.root = Path(temporary.name).resolve()
         self.ctx = {
             "install_dir": self.root,
             "config_dir": self.root,
@@ -50,7 +50,7 @@ class InstallerJsonTests(unittest.TestCase):
         config = json.loads((ROOT / "config.json").read_text(encoding="utf-8-sig"))
         for scenario in ("fresh", "matching CLAUDE.md", "user CLAUDE.md", "existing skill"):
             with self.subTest(scenario=scenario), tempfile.TemporaryDirectory() as temporary:
-                install_dir = Path(temporary)
+                install_dir = Path(temporary).resolve()
                 ctx = {**self.ctx, "install_dir": install_dir, "config_dir": ROOT,
                        "status_file": install_dir / "installed_modules.json"}
                 claude = install_dir / "CLAUDE.md"
@@ -132,7 +132,7 @@ class InstallerJsonTests(unittest.TestCase):
     def test_copy_file_uninstall_checks_source_bytes(self):
         for scenario in ("identical", "user", "missing", "missing source", "unreadable source"):
             with self.subTest(scenario=scenario), tempfile.TemporaryDirectory() as temporary:
-                root = Path(temporary)
+                root = Path(temporary).resolve()
                 ctx = {**self.ctx, "install_dir": root / "install", "config_dir": root}
                 source = root / "source.md"
                 target = ctx["install_dir"] / "agents/dev-plan-generator.md"
@@ -161,7 +161,7 @@ class InstallerJsonTests(unittest.TestCase):
 
     def test_update_overwrites_copy_targets_but_preserves_unowned_merge_files(self):
         with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
+            root = Path(temporary).resolve()
             source = root / "source"
             (source / "merge" / "commands").mkdir(parents=True)
             (source / "skill").mkdir()

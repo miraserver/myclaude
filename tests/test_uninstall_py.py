@@ -23,7 +23,7 @@ class UninstallerWrapperTests(unittest.TestCase):
         installer_spec.loader.exec_module(installer)
         for scenario in ("identical", "user", "missing", "missing source", "unreadable source"):
             with self.subTest(scenario=scenario), tempfile.TemporaryDirectory() as temporary:
-                root = Path(temporary)
+                root = Path(temporary).resolve()
                 install_dir = root / "install"
                 source = root / "source.md"
                 target = install_dir / "agents/dev-plan-generator.md"
@@ -61,7 +61,7 @@ class UninstallerWrapperTests(unittest.TestCase):
 
     def test_windows_wrapper_is_removed_without_touching_sibling_files(self):
         with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
+            root = Path(temporary).resolve()
             install_dir = root / "install"
             profile = root / "profile"
             wrapper_dir = profile / "bin"
@@ -94,7 +94,7 @@ class UninstallerWrapperTests(unittest.TestCase):
     def test_partial_uninstall_keeps_shared_wrapper_then_removes_last_dependency(self):
         for platform in ("win32", "linux", "darwin"):
             with self.subTest(platform=platform), tempfile.TemporaryDirectory() as temporary:
-                root = Path(temporary)
+                root = Path(temporary).resolve()
                 install_dir = root / "install"
                 profile = root / "profile"
                 install_dir.mkdir()
@@ -145,7 +145,7 @@ class UninstallerWrapperTests(unittest.TestCase):
         for platform in ("win32", "linux"):
             for purge in (False, True):
                 with self.subTest(platform=platform, purge=purge), tempfile.TemporaryDirectory() as temporary:
-                    root = Path(temporary)
+                    root = Path(temporary).resolve()
                     install_dir = root / "install"
                     profile = root / "profile"
                     install_dir.mkdir()
@@ -189,7 +189,7 @@ class SharedAgentUninstallTests(unittest.TestCase):
         spec.loader.exec_module(installer)
         for selection in ("do,omo", "omo,do", "do"):
             with self.subTest(selection=selection), tempfile.TemporaryDirectory() as temporary:
-                root = Path(temporary)
+                root = Path(temporary).resolve()
                 config = {"modules": {name: {"operations": [], "agents": {
                     "develop": {"backend": "codex", "model": name}}} for name in ("do", "omo")}}
                 config_path = root / "config.json"
@@ -222,7 +222,7 @@ class UninstallerOwnershipTests(unittest.TestCase):
     def test_merge_uninstall_keeps_foreign_and_modified_files_with_or_without_manifest(self):
         for recorded in (True, False):
             with self.subTest(recorded=recorded), tempfile.TemporaryDirectory() as temp:
-                root = Path(temp)
+                root = Path(temp).resolve()
                 source = root / "source/agents"
                 source.mkdir(parents=True)
                 install = root / "install"
@@ -246,7 +246,7 @@ class UninstallerOwnershipTests(unittest.TestCase):
     def test_implicit_wrapper_dependencies_preserve_wrapper_and_shell_path(self):
         for dependency in ("do", "omo", "course"):
             with self.subTest(dependency=dependency), tempfile.TemporaryDirectory() as temp:
-                root = Path(temp)
+                root = Path(temp).resolve()
                 install = root / "install"
                 wrapper = install / "bin/codeagent-wrapper"
                 wrapper.parent.mkdir(parents=True)
