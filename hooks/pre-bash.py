@@ -57,7 +57,7 @@ def dangerous(command):
 
 def main():
     try:
-        data = json.loads(sys.stdin.buffer.read().decode("utf-8", errors="replace"))
+        data = json.loads(sys.stdin.buffer.read().decode("utf-8-sig", errors="replace"))
         command = data["tool_input"]["command"]
         if not isinstance(command, str):
             return 0

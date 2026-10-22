@@ -213,3 +213,31 @@ def test_writer_never_overwrites_unreadable_registry(tmp_path, monkeypatch, fail
     with pytest.raises((OSError, ValueError)):
         register(tmp_path / "new")
     assert path.read_bytes() == before
+
+
+@pytest.mark.parametrize("persistent", [False, True])
+def test_lock_open_permission_error_retries_with_shared_deadline(tmp_path, monkeypatch, persistent):
+    clock = [0.0]
+    calls = []
+    original = registry.os.open
+    monkeypatch.setattr(registry, "time", SimpleNamespace(
+        monotonic=lambda: clock[0],
+        sleep=lambda seconds: clock.__setitem__(0, clock[0] + seconds)))
+
+    def denied(*args, **kwargs):
+        calls.append(clock[0])
+        if persistent or len(calls) == 1:
+            raise PermissionError("sharing violation")
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(registry.os, "open", denied)
+    if persistent:
+        with pytest.raises(TimeoutError, match="Timed out waiting for registry lock"):
+            with registry._registry_lock():
+                pytest.fail("must not acquire the lock")
+        assert 5.0 <= clock[0] < 5.03
+    else:
+        with registry._registry_lock():
+            assert len(calls) == 2
+        assert clock[0] == 0.02
+    assert len(calls) > 1

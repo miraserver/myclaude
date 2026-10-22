@@ -25,7 +25,7 @@ else:
 def read_payload() -> dict:
     """Treat malformed, empty, and nonobject hook input as unusable."""
     try:
-        payload = json.loads(sys.stdin.buffer.read().decode("utf-8", errors="replace"))
+        payload = json.loads(sys.stdin.buffer.read().decode("utf-8-sig", errors="replace"))
     except (ValueError, OSError):
         return {}
     return payload if isinstance(payload, dict) else {}

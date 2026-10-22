@@ -119,7 +119,15 @@ def _registry_lock():
     """
     path = registry_path().with_name("registry.lock")
     path.parent.mkdir(parents=True, exist_ok=True)
-    fd = os.open(path, os.O_CREAT | os.O_RDWR, 0o600)
+    deadline = time.monotonic() + 5.0
+    while True:
+        try:
+            fd = os.open(path, os.O_CREAT | os.O_RDWR, 0o600)
+            break
+        except PermissionError:
+            if time.monotonic() >= deadline:
+                raise TimeoutError("Timed out waiting for registry lock: " + str(path))
+            time.sleep(0.02)
     try:
         if os.name == "nt":
             import msvcrt
@@ -135,7 +143,6 @@ def _registry_lock():
                 fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
             def release():
                 fcntl.flock(fd, fcntl.LOCK_UN)
-        deadline = time.monotonic() + 5.0
         while True:
             try:
                 acquire()

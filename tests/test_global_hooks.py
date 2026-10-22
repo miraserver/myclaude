@@ -88,3 +88,15 @@ def test_utf8_payload_under_ansi_stdio(tmp_path, monkeypatch, encoding):
     monkeypatch.setenv("PYTHONIOENCODING", encoding)
     payload = json.dumps({"tool_input": {"command": "rm -rf /  # комментарий 😀"}}, ensure_ascii=False)
     assert run(tmp_path, "pre-bash.py", payload).returncode == 2
+
+
+def test_bom_payload_blocks_dangerous_command(tmp_path):
+    payload = '\ufeff' + json.dumps({"tool_input": {"command": "rm -rf /"}})
+    assert run(tmp_path, "pre-bash.py", payload).returncode == 2
+
+
+def test_bom_prompt_logs_decoded_prompt(tmp_path):
+    result = run(tmp_path, "log-prompt.py", '\ufeff' + json.dumps({"prompt": "BOM prompt"}))
+    assert result.returncode == 0, result.stderr
+    log = (tmp_path / "home/.claude/state/session-test.log").read_text(encoding="utf-8")
+    assert log.split("] ", 1)[1] == "BOM prompt\n"

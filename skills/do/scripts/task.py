@@ -20,6 +20,7 @@ import json
 import os
 import random
 import re
+import shlex
 import string
 import subprocess
 import sys
@@ -57,7 +58,15 @@ def _registry_lock():
     """
     path = registry_path().with_name("registry.lock")
     path.parent.mkdir(parents=True, exist_ok=True)
-    fd = os.open(path, os.O_CREAT | os.O_RDWR, 0o600)
+    deadline = time.monotonic() + 5.0
+    while True:
+        try:
+            fd = os.open(path, os.O_CREAT | os.O_RDWR, 0o600)
+            break
+        except PermissionError:
+            if time.monotonic() >= deadline:
+                raise TimeoutError("Timed out waiting for registry lock: " + str(path))
+            time.sleep(0.02)
     try:
         if os.name == "nt":
             import msvcrt
@@ -73,7 +82,6 @@ def _registry_lock():
                 fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
             def release():
                 fcntl.flock(fd, fcntl.LOCK_UN)
-        deadline = time.monotonic() + 5.0
         while True:
             try:
                 acquire()
@@ -366,7 +374,10 @@ def create_task(
     task_md_path = os.path.join(task_dir, FILE_TASK_MD)
     save_task(task_md_path, frontmatter, body)
 
-    register_task(project_root, task_md_path, frontmatter["verify_command"], frontmatter["created_at"])
+    try:
+        register_task(project_root, task_md_path, frontmatter["verify_command"], frontmatter["created_at"])
+    except ValueError as error:
+        print(f"Warning: Failed to write do registry: {error}", file=sys.stderr)
 
     current_task_file = get_current_task_file(project_root)
     relative_task_dir = os.path.relpath(task_dir, project_root)
@@ -421,7 +432,7 @@ def attach_worktree() -> bool:
         return False
     worktree_dir = frontmatter.get("worktree_dir", "")
     if worktree_dir and Path(worktree_dir).is_dir():
-        print(f"export DO_WORKTREE_DIR={Path(worktree_dir).as_posix()}")
+        print(f"export DO_WORKTREE_DIR={shlex.quote(Path(worktree_dir).as_posix())}")
         return True
     try:
         worktree_dir = create_worktree(project_root, task_id, worktree_dir)
@@ -433,7 +444,7 @@ def attach_worktree() -> bool:
     if not write_task_md(task_md_path, frontmatter, body):
         print("Error: Failed to write task.md.", file=sys.stderr)
         return False
-    print(f"export DO_WORKTREE_DIR={Path(worktree_dir).as_posix()}")
+    print(f"export DO_WORKTREE_DIR={shlex.quote(Path(worktree_dir).as_posix())}")
     return True
 
 
@@ -595,6 +606,8 @@ def set_verify(command: str) -> bool:
         return False
     try:
         register_task(project_root, task_md_path, command, datetime.now().isoformat())
+    except ValueError as error:
+        print(f"Warning: Failed to write do registry: {error}", file=sys.stderr)
     except OSError as error:
         print(f"Error: Failed to write do registry: {error}", file=sys.stderr)
         return False
