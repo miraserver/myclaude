@@ -7,7 +7,7 @@ Completes "requirements → verifiable delivery" in one pass with external memor
 ## Installation
 
 ```bash
-python install.py --module sparv
+npx github:miraserver/myclaude --module sparv
 ```
 
 Installs to `~/.claude/skills/sparv/`.
@@ -165,5 +165,5 @@ Configured in `hooks/hooks.json`:
 ## Uninstall
 
 ```bash
-python install.py --uninstall --module sparv
+npx github:miraserver/myclaude uninstall --module sparv -y
 ```

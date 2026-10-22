@@ -5,7 +5,7 @@ OmO is a multi-agent orchestration skill that routes tasks to specialized agents
 ## Installation
 
 ```bash
-python install.py --module omo
+npx github:miraserver/myclaude --module omo
 ```
 
 ## Usage

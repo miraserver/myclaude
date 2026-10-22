@@ -63,6 +63,8 @@ Individual skills can be installed separately via `npx github:miraserver/myclaud
 
 ## Installation
 
+The npx installer ([`bin/cli.js`](bin/cli.js)) is the supported installer. `install.py` is legacy, kept for compatibility, and may lag behind.
+
 ```bash
 # Interactive installer (recommended)
 npx github:miraserver/myclaude
@@ -70,14 +72,26 @@ npx github:miraserver/myclaude
 # List installable items (modules / skills / wrapper)
 npx github:miraserver/myclaude --list
 
-# Detect installed modules and update from GitHub
+# Update installed modules and standalone skills to the latest release
 npx github:miraserver/myclaude --update
 
 # Custom install directory / overwrite
 npx github:miraserver/myclaude --install-dir ~/.claude --force
 ```
 
-`--update` detects already installed modules in the target install dir (defaults to `~/.claude`, via `installed_modules.json` when present) and updates them from GitHub (latest release) by overwriting the module files.
+`--update` detects installed modules and standalone skills in the target install directory (default: `~/.claude`, tracked in `installed_modules.json`) and updates them to the latest release. Standalone skills selected as `skill:<name>` are tracked, updated, and uninstalled like modules.
+
+Global `CLAUDE.md` is no longer installed by default. Opt in with `--with-claude-md`; an existing `CLAUDE.md` is never overwritten:
+
+```bash
+npx github:miraserver/myclaude --with-claude-md
+```
+
+### Versions & releases
+
+Releases are tags named `vX.Y.Z` on [github.com/miraserver/myclaude](https://github.com/miraserver/myclaude/releases). Pin a version with `npx github:miraserver/myclaude#vX.Y.Z`; use `--update` to update installed modules to the latest release.
+
+Release assets include `SHA256SUMS`, which `install.sh`, `install.bat`, and the npx installer use to verify downloaded files.
 
 ### Module Configuration
 
@@ -120,13 +134,13 @@ npx github:miraserver/myclaude uninstall --module omo
 ```
 ~/.claude/
 ├── bin/codeagent-wrapper  (Unix only)
-├── CLAUDE.md              (installed by default)
+├── CLAUDE.md              (opt-in: --with-claude-md)
 ├── commands/              (from essentials module)
 ├── agents/                (from bmad/requirements modules)
 ├── skills/                (from do/omo/sparv/course modules)
 ├── hooks/                 (from claudekit module)
 ├── settings.json          (auto-generated, hooks config)
-└── installed_modules.json (auto-generated, tracks modules)
+└── installed_modules.json (tracks modules and standalone skills)
 ```
 
 On Windows, the wrapper is installed to `%USERPROFILE%\bin\codeagent-wrapper.exe`, rather than `~/.claude/bin`.
@@ -135,7 +149,7 @@ On Windows, the wrapper is installed to `%USERPROFILE%\bin\codeagent-wrapper.exe
 
 Nested Claude, Codex, and Gemini backends skip permission prompts or sandbox protections by default. To restore Claude permission prompts, set `CODEAGENT_SKIP_PERMISSIONS=false`; to disable Codex sandbox bypass, set `CODEX_BYPASS_SANDBOX=false`. Also set `yolo: false` for relevant agents in `~/.codeagent/models.json` and remove explicit `--skip-permissions` flags or task-level `skip-permissions: true`. The Gemini wrapper always adds `-y` and currently has no opt-out; for permission prompts or sandboxing, run the Gemini CLI directly without `-y` and enable its sandbox.
 
-The `do` Stop hook only verifies tasks created by `/do` on this machine. Installers verify downloaded files against the release asset `SHA256SUMS` using SHA-256.
+Harness hooks act only in projects activated through the harness skill and registered in `~/.claude/harness-state`. The `do` Stop hook only verifies tasks created by `/do` on this machine. Installers verify downloaded files against the release asset `SHA256SUMS` using SHA-256.
 
 ## Documentation
 

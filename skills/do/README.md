@@ -5,7 +5,7 @@
 ## Installation
 
 ```bash
-python install.py --module do
+npx github:miraserver/myclaude --module do
 ```
 
 Installs:
@@ -205,7 +205,7 @@ Required when using `agent:` in parallel tasks or `--agent`. Create `~/.codeagen
 ## Uninstall
 
 ```bash
-python install.py --uninstall --module do
+npx github:miraserver/myclaude uninstall --module do -y
 ```
 
 ## Worktree Mode

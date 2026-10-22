@@ -5,7 +5,7 @@ Full enterprise agile methodology with 6 specialized agents, UltraThink analysis
 ## Installation
 
 ```bash
-python install.py --module bmad
+npx github:miraserver/myclaude --module bmad
 ```
 
 ## Usage

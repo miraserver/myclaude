@@ -2,6 +2,110 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### 🚀 Features
+
+- Make global `CLAUDE.md` opt-in with `--with-claude-md`; never overwrite an existing file.
+- Track standalone skills (`skill:<name>`) for updates and uninstall, like modules.
+- Show the installed module version in status output.
+- Restrict harness hooks to projects activated through the harness skill and registered in `~/.claude/harness-state`.
+- Add a post-release installation smoke test in CI.
+
+### 🐛 Bug Fixes
+
+- Warn when latest-release tag lookup fails instead of silently falling back.
+- Fix Windows SHA256SUMS parsing in install.bat when GitHub serves the manifest as application/octet-stream (PowerShell 5.1 returned bytes; every wrapper install failed with a checksum mismatch in 6.9.5/6.9.6).
+
+### ⚠️ Upgrade notes
+
+- Harness runs activated before this release are not registered; run /harness run once in such projects to re-activate.
+
+## [6.9.6] - 2026-10-22
+
+### 🐛 Bug Fixes
+
+- Fix Windows SHA256 verification under delayed expansion; exercise the batch verification label through real `cmd.exe`.
+- Register only the claudekit pre-bash guard; remove no-op spec injection and unused prompt logging, and move hook tests outside installed files.
+
+## [6.9.5] - 2026-10-22
+
+### 🐛 Bug Fixes
+
+- Fix wrapper stdin handling, explicit permission settings, parallel configuration priority, Unicode skill truncation, and temporary-directory cleanup.
+- Use a user-local `do` task registry for verification commands and resolve verification directories relative to worktrees.
+- Handle locked Windows executables and fix harness lease locking, claim/rollback, SPARV, browser, and skill-install behavior.
+- Run script tests across three operating systems and normalize temporary paths on macOS and Windows.
+
+### 🔒 Security
+
+- Verify downloaded assets against release `SHA256SUMS`; check release versions and restrict CI permissions.
+- Preserve file ownership during uninstall and model merges, and protect `models.json` permissions.
+- Read pre-bash commands from stdin and block dangerous commands with exit code 2.
+
+## [6.9.4] - 2026-10-22
+
+### 🐛 Bug Fixes
+
+- Fix installer rollback, update selection scope, Windows launch, and the codeagent skill dependency.
+- Merge `do` model settings safely and mark agent ownership with `__module__`.
+- Fix wrapper stdin/argument handling, configuration priority, worktree handling, and exit codes.
+- Correct browser script references, WebSocket resolution, and SPARV state paths; expand CI to three operating systems and correct previous-tag detection.
+
+## [6.9.3] - 2026-10-22
+
+### 🐛 Bug Fixes
+
+- Install the dev-plan-generator subagent and preserve unowned single-file installation targets.
+- Bound `do` verification timeouts, track cancellation, restart verification setup, and match hooks precisely.
+- Fix harness subagent stop ownership, empty-list initialization, reflection counting, and transcript parsing.
+
+## [6.9.2] - 2026-10-22
+
+### 🐛 Bug Fixes
+
+- Fix Windows wrapper paths, tagged downloads, and offline installation.
+- Terminate the whole wrapper process tree on cancellation, honor agent settings, retain stdout tails, and remove Gemini prompt echo.
+- Attach worktrees to the current `do` task, resolve OmO role prompts from installed paths, and support non-UTF-8 consoles in harness hooks.
+
+### 🔒 Security
+
+- Preserve corrupt JSON and unowned user files instead of overwriting them during installation.
+
+## [6.9.1] - 2026-10-21
+
+### 🐛 Bug Fixes
+
+- Invoke `install.bat` by absolute path and use CRLF line endings for batch files.
+
+## [6.9.0] - 2026-10-21
+
+### 🚀 Features
+
+- Rebrand the fork as `miraserver/myclaude` and update default models to Claude Opus 5.5, Claude Sonnet 5.5, and GPT-6.1-sol.
+- Add a working `do` Stop gate with a task verification loop.
+
+### 🐛 Bug Fixes
+
+- Reconcile hooks idempotently, preserve user-edited model agents, and remove only module-owned files and hooks on uninstall.
+- Pass Claude reasoning effort to the backend and build with Go 1.26 for compatibility with current macOS.
+
+## [6.8.0]
+
+Reconstructed from pre-6.9.0 history after 6.7.0; this checkout has no `v6.8.0` tag, so the exact release boundary and date are unavailable.
+
+### 🚀 Features
+
+- Add the harness skill with hook installation, removal, and explicit reflection markers.
+- Add structured JSON output and progress frames to codeagent-wrapper; refactor wrapper runtime boundaries.
+
+### 🐛 Bug Fixes
+
+- Fix installer bootstrap and offline fallback, `do` worktree handling, and absolute skill script paths.
+- Isolate nested Claude temporary directories and clear `CLAUDECODE` to avoid nested-session rejection.
+- Retain wrapper logs and parsed errors, remove summary truncation, filter Codex stderr noise, and fix macOS symlink cleanup.
+- Improve Windows temporary paths and remove forced Claude setting sources.
+
 ## [6.7.0] - 2026-02-10
 
 ### 🚀 Features

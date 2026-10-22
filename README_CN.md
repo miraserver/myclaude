@@ -204,6 +204,8 @@ npx github:miraserver/myclaude
 
 ## 安装
 
+npx 安装器（[`bin/cli.js`](bin/cli.js)）是受支持的安装方式。`install.py` 为兼容性保留的旧版安装器，功能可能滞后。
+
 ```bash
 # 交互式安装器（推荐）
 npx github:miraserver/myclaude
@@ -211,14 +213,26 @@ npx github:miraserver/myclaude
 # 列出可安装项（module:* / skill:* / codeagent-wrapper）
 npx github:miraserver/myclaude --list
 
-# 检测已安装 modules 并从 GitHub 更新
+# 将已安装模块和独立技能更新到最新发布版本
 npx github:miraserver/myclaude --update
 
 # 指定安装目录 / 强制覆盖
 npx github:miraserver/myclaude --install-dir ~/.claude --force
 ```
 
-`--update` 会在目标安装目录（默认 `~/.claude`，优先读取 `installed_modules.json`）检测已安装 modules，并从 GitHub 拉取最新发布版本覆盖更新。
+`--update` 会检测目标安装目录（默认 `~/.claude`，通过 `installed_modules.json` 跟踪）中已安装的模块和独立技能，并更新到最新发布版本。以 `skill:<name>` 选择的独立技能现在与模块一样，支持安装记录跟踪、更新和卸载。
+
+默认不再安装全局 `CLAUDE.md`。使用 `--with-claude-md` 显式启用；已有的 `CLAUDE.md` 永远不会被覆盖：
+
+```bash
+npx github:miraserver/myclaude --with-claude-md
+```
+
+### 版本与发布
+
+发布版本使用 [github.com/miraserver/myclaude](https://github.com/miraserver/myclaude/releases) 上的 `vX.Y.Z` 标签。使用 `npx github:miraserver/myclaude#vX.Y.Z` 固定版本；使用 `--update` 将已安装模块更新到最新发布版本。
+
+发布资产包含 `SHA256SUMS`，`install.sh`、`install.bat` 和 npx 安装器会用它校验下载文件。
 
 ### 模块配置
 
@@ -277,7 +291,7 @@ npx github:miraserver/myclaude --force
 
 嵌套的 Claude、Codex、Gemini 后端默认跳过权限提示或沙箱保护。要恢复 Claude 的权限提示，请设置 `CODEAGENT_SKIP_PERMISSIONS=false`；要关闭 Codex 的沙箱绕过，请设置 `CODEX_BYPASS_SANDBOX=false`。同时将 `~/.codeagent/models.json` 中相关智能体的 `yolo` 设为 `false`，并移除显式的 `--skip-permissions` 或任务配置中的 `skip-permissions: true`。Gemini 包装器始终添加 `-y`，目前没有关闭开关；需要权限提示或沙箱时，请直接运行 Gemini CLI，省略 `-y` 并启用沙箱。
 
-`do` 的 Stop 钩子仅验证本机通过 `/do` 创建的任务。安装器使用发布资产 `SHA256SUMS` 校验下载文件的 SHA-256。
+Harness 钩子仅在通过 harness 技能激活并登记到 `~/.claude/harness-state` 的项目中生效。`do` 的 Stop 钩子仅验证本机通过 `/do` 创建的任务。安装器使用发布资产 `SHA256SUMS` 校验下载文件的 SHA-256。
 
 ## 安装后的路径
 

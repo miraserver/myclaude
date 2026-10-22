@@ -5,7 +5,7 @@ Lightweight requirements-to-code pipeline with interactive quality gates.
 ## Installation
 
 ```bash
-python install.py --module requirements
+npx github:miraserver/myclaude --module requirements
 ```
 
 ## Usage
