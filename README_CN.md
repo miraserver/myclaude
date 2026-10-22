@@ -43,7 +43,7 @@ npx github:miraserver/myclaude
 | [sparv](skills/sparv/README.md) | SPARV 工作流 (Specify→Plan→Act→Review→Vault) | `/sparv` 命令 |
 | [harness](skills/harness/SKILL.md) | 跨会话自主智能体，支持进度检查点、失败恢复、任务依赖和完成后自我反思 | `/harness` 命令 |
 | course | 课程开发（组合 dev + product-requirements + test-cases） | 组合模块 |
-| claudekit | 仅安装全局钩子（pre-bash、inject-spec、log-prompt）；do 是独立模块| 组合模块 |
+| claudekit | 仅安装危险命令防护钩子（pre-bash）；do 是独立模块| 组合模块 |
 
 ### 可用技能
 

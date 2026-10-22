@@ -45,7 +45,7 @@ These requirements follow the agents and backends in [`config.json`](config.json
 | [sparv](skills/sparv/README.md) | SPARV workflow (Specify→Plan→Act→Review→Vault) | `/sparv` command |
 | [harness](skills/harness/SKILL.md) | Multi-session autonomous agents with progress checkpoints, failure recovery, task dependencies, and self-reflection | `/harness` command |
 | course | Course development (combines dev + product-requirements + test-cases) | Composite module |
-| claudekit | Global hooks only (pre-bash, inject-spec, log-prompt); do is a separate module | Composite module |
+| claudekit | Installs the dangerous-command guard (pre-bash) only; do is a separate module | Composite module |
 
 ### Available Skills
 

@@ -7,7 +7,34 @@ import subprocess
 import sys
 import pytest
 
-HOOKS = Path(__file__).resolve().parents[1]
+HOOKS = Path(__file__).resolve().parents[1] / "hooks"
+
+
+def test_registered_hooks_are_pre_bash_only():
+    manifest = json.loads((HOOKS / "hooks.json").read_text(encoding="utf-8"))
+    assert manifest["hooks"] == {
+        "PreToolUse": [{
+            "matcher": "Bash",
+            "hooks": [{
+                "type": "command",
+                "command": 'python3 "${CLAUDE_PLUGIN_ROOT}/pre-bash.py"',
+            }],
+        }],
+    }
+
+
+def test_registered_command_paths_exist():
+    manifest = json.loads((HOOKS / "hooks.json").read_text(encoding="utf-8"))
+    for entries in manifest["hooks"].values():
+        for entry in entries:
+            for hook in entry["hooks"]:
+                if hook["type"] == "command":
+                    prefix = 'python3 "${CLAUDE_PLUGIN_ROOT}/'
+                    command = hook["command"]
+                    assert command.startswith(prefix) and command.endswith('"')
+                    script = (HOOKS / command[len(prefix):-1]).resolve()
+                    assert script.is_relative_to(HOOKS.resolve())
+                    assert script.is_file(), script
 
 
 def run(tmp_path, script, payload):

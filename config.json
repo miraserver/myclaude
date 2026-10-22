@@ -224,13 +224,13 @@
     },
     "claudekit": {
       "enabled": false,
-      "description": "ClaudeKit global hooks (pre-bash, inject-spec, log-prompt)",
+      "description": "ClaudeKit dangerous-command guard (pre-bash) only",
       "operations": [
         {
           "type": "copy_dir",
           "source": "hooks",
           "target": "hooks",
-          "description": "Install global hooks (pre-bash, inject-spec, log-prompt)"
+          "description": "Install dangerous-command guard (pre-bash) only"
         }
       ]
     }
