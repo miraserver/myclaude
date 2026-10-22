@@ -84,7 +84,12 @@ func TestTaskRejectsDamagedFinalOutput(t *testing.T) {
 		{"oversized noise after final", final + strings.Repeat("noise", 3*1024*1024), false, "final"},
 		{"dropped then valid final", broken + "\n" + final, false, "final"},
 		{"oversized then valid final", oversized + "\n" + final, false, "final"},
-		{"dropped then completion", broken + "\n" + `{"type":"turn.completed"}` + "\n", false, "interim"},
+		{"dropped then completion", broken + "\n" + `{"type":"turn.completed"}` + "\n", true, "interim"},
+		{"overlong then completion", oversized + "\n" + `{"type":"turn.completed"}` + "\n", true, "interim"},
+		{"diagnostic after completion", final + `{"type":"turn.completed"}` + "\n{diagnostic", false, "final"},
+		{"brace after completion", final + `{"type":"turn.completed"}` + "\n{", false, "final"},
+		{"overlong tool output between messages", `{"type":"tool_output","text":"` + strings.Repeat("x", 11*1024*1024) + `"}` + "\n" + final, false, "final"},
+		{"claude result then brace", `{"type":"result","result":"final","session_id":"s"}` + "\n{", false, "final"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			installOutputBackend(t, func(string) (string, string) { return interim + tc.tail, "" })

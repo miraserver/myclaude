@@ -74,7 +74,12 @@ func ParseJSONStreamWithError(r io.Reader, warnFn func(string), infoFn func(stri
 		infoFn = func(string) {}
 	}
 
-	var droppedJSON bool
+	var pendingDrop, lostFinal, completedAfterMessage bool
+	acceptMessage := func() {
+		pendingDrop = false
+		lostFinal = false
+		completedAfterMessage = false
+	}
 	notifyMessage := func() {
 		if onMessage != nil {
 			onMessage()
@@ -82,7 +87,10 @@ func ParseJSONStreamWithError(r io.Reader, warnFn func(string), infoFn func(stri
 	}
 
 	notifyComplete := func() {
-		droppedJSON = false
+		if pendingDrop {
+			lostFinal = true
+		}
+		completedAfterMessage = true
 		if onComplete != nil {
 			onComplete()
 		}
@@ -114,8 +122,8 @@ func ParseJSONStreamWithError(r io.Reader, warnFn func(string), infoFn func(stri
 		totalEvents++
 
 		if tooLong {
-			if line[0] == '{' {
-				droppedJSON = true
+			if line[0] == '{' && !completedAfterMessage {
+				pendingDrop = true
 			}
 			warnFn(fmt.Sprintf("Skipped overlong JSON line (> %d bytes): %s", jsonLineMaxBytes, TruncateBytes(line, 100)))
 			continue
@@ -124,8 +132,8 @@ func ParseJSONStreamWithError(r io.Reader, warnFn func(string), infoFn func(stri
 		// Single unmarshal for all backend types
 		var event UnifiedEvent
 		if err := json.Unmarshal(line, &event); err != nil {
-			if line[0] == '{' {
-				droppedJSON = true
+			if line[0] == '{' && !completedAfterMessage {
+				pendingDrop = true
 			}
 			warnFn(fmt.Sprintf("Failed to parse event: %s", TruncateBytes(line, 100)))
 			continue
@@ -178,7 +186,7 @@ func ParseJSONStreamWithError(r io.Reader, warnFn func(string), infoFn func(stri
 
 			if event.Type == "text" && part.Text != "" {
 				opencodeMessage.WriteString(part.Text)
-				droppedJSON = false
+				acceptMessage()
 				notifyMessage()
 			}
 
@@ -236,7 +244,7 @@ func ParseJSONStreamWithError(r io.Reader, warnFn func(string), infoFn func(stri
 						infoFn(fmt.Sprintf("item.completed event item_type=%s message_len=%d", itemType, len(normalized)))
 						if normalized != "" {
 							codexMessage = normalized
-							droppedJSON = false
+							acceptMessage()
 							notifyMessage()
 						}
 					} else {
@@ -259,7 +267,7 @@ func ParseJSONStreamWithError(r io.Reader, warnFn func(string), infoFn func(stri
 
 			if event.Result != "" {
 				claudeMessage = event.Result
-				droppedJSON = false
+				acceptMessage()
 				notifyMessage()
 			}
 
@@ -277,7 +285,7 @@ func ParseJSONStreamWithError(r io.Reader, warnFn func(string), infoFn func(stri
 
 			if event.Content != "" && event.Role != "user" && event.Role != "system" {
 				geminiBuffer.WriteString(event.Content)
-				droppedJSON = false
+				acceptMessage()
 			}
 
 			if event.Status != "" {
@@ -313,7 +321,7 @@ func ParseJSONStreamWithError(r io.Reader, warnFn func(string), infoFn func(stri
 	}
 
 	infoFn(fmt.Sprintf("parseJSONStream completed: events=%d, message_len=%d, thread_id_found=%t", totalEvents, len(message), threadID != ""))
-	if streamErr == nil && droppedJSON {
+	if streamErr == nil && (lostFinal || (pendingDrop && !completedAfterMessage)) {
 		streamErr = errors.New("backend output truncated/unparsable; final message may be lost")
 	}
 	return message, threadID, streamErr

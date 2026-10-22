@@ -189,7 +189,7 @@ jobs:
   withdraw:
     name: Withdraw release after smoke failure
     needs: [smoke]
-    if: failure()
+    if: failure() && needs.smoke.result == 'failure'
     runs-on: ubuntu-latest
     permissions:
       contents: write
