@@ -1781,10 +1781,119 @@ function requirementSandbox(repo, home = repo) {
     runInstallSh = async () => { wrapperCalls++; };
     module.exports.install = installSelected;
     module.exports.update = updateInstalledModules;
+    module.exports.uninstallModule = uninstallModule;
     module.exports.wrapperCalls = () => wrapperCalls;
   `, sandbox);
   return { api: sandbox.module.exports, output: () => output, warnings: () => warnings };
 }
+
+test("batch 10 merge_dir excludes plugin manifests and config writes do not overlap", async (t) => {
+  const f = fixture(t);
+  const repo = path.resolve(__dirname, "..");
+  const config = JSON.parse(fs.readFileSync(path.join(repo, "config.json"), "utf8"));
+  const s = requirementSandbox(repo);
+  await s.api.install([
+    { kind: "module", moduleName: "essentials" },
+    { kind: "module", moduleName: "requirements" },
+  ], null, config, f.installDir, false, false, true);
+  await s.api.install([
+    { kind: "module", moduleName: "essentials" },
+    { kind: "module", moduleName: "requirements" },
+  ], null, config, f.installDir, true, false, true);
+  assert.equal(fs.existsSync(path.join(f.installDir, ".claude-plugin")), false);
+  const status = loadInstalledStatus(f.installDir);
+  for (const entry of Object.values(status.modules)) {
+    assert.equal(Object.hasOwn(entry.files || {}, ".claude-plugin/plugin.json"), false);
+    assert.equal((entry.merge_dir_files || []).includes(".claude-plugin/plugin.json"), false);
+  }
+
+  const writers = new Map();
+  for (const [name, mod] of Object.entries(config.modules)) {
+    for (const op of mod.operations || []) {
+      if (op.type === "copy_file") add(op.target, name);
+      else if (op.type === "copy_dir") {
+        const walk = (dir, rel = "") => {
+          for (const ent of fs.readdirSync(dir, { withFileTypes: true })) {
+            const child = path.join(dir, ent.name);
+            const target = path.posix.join(op.target.replace(/\\/g, "/"), rel.replace(/\\/g, "/"), ent.name);
+            if (ent.isDirectory()) walk(child, path.join(rel, ent.name));
+            else if (ent.isFile()) add(target, name);
+          }
+        };
+        walk(path.join(repo, op.source));
+      } else if (op.type === "merge_dir") {
+        for (const dir of fs.readdirSync(path.join(repo, op.source), { withFileTypes: true })) {
+          if (!dir.isDirectory() || dir.name === ".claude-plugin") continue;
+          for (const file of fs.readdirSync(path.join(repo, op.source, dir.name), { withFileTypes: true })) {
+            if (file.isFile()) add(path.posix.join(dir.name, file.name), name);
+          }
+        }
+      }
+    }
+  }
+  function add(rel, name) {
+    const key = rel.replace(/\\/g, "/");
+    if (!writers.has(key)) writers.set(key, new Set());
+    writers.get(key).add(name);
+  }
+  const allowlist = {};
+  const overlaps = [...writers].filter(([rel, names]) => names.size > 1 && !allowlist[rel]);
+  assert.deepEqual(overlaps, []);
+});
+
+test("batch 10 update migrates legacy plugin manifest ownership", async (t) => {
+  const f = fixture(t);
+  const repo = path.resolve(__dirname, "..");
+  const config = JSON.parse(fs.readFileSync(path.join(repo, "config.json"), "utf8"));
+  const rel = ".claude-plugin/plugin.json";
+  const requirements = fs.readFileSync(path.join(repo, "agents/requirements", rel));
+  const essentials = fs.readFileSync(path.join(repo, "agents/development-essentials", rel));
+  const target = path.join(f.installDir, rel);
+  fs.mkdirSync(path.dirname(target), { recursive: true });
+  fs.writeFileSync(target, requirements);
+  upsertModuleStatus(f.installDir, { module: "essentials", status: "success", files: { [rel]: sha256(essentials) }, merge_dir_files: [rel] });
+  upsertModuleStatus(f.installDir, { module: "requirements", status: "success", files: { [rel]: sha256(requirements) }, merge_dir_files: [rel] });
+  const s = requirementSandbox(repo);
+  await s.api.update(f.installDir, null, config, false, false, true);
+  assert.equal(fs.existsSync(target), false);
+  assert.equal(fs.existsSync(path.dirname(target)), false);
+  for (const entry of Object.values(loadInstalledStatus(f.installDir).modules)) {
+    assert.equal(Object.hasOwn(entry.files || {}, rel), false);
+    assert.equal((entry.merge_dir_files || []).includes(rel), false);
+  }
+  assert.doesNotMatch(s.output(), /Keeping .*plugin\.json: modified locally/);
+});
+
+test("batch 10 update keeps edited plugin manifest once and uninstall drops legacy ownership", async (t) => {
+  const f = fixture(t);
+  const repo = path.resolve(__dirname, "..");
+  const config = JSON.parse(fs.readFileSync(path.join(repo, "config.json"), "utf8"));
+  const rel = ".claude-plugin/plugin.json";
+  const target = path.join(f.installDir, rel);
+  fs.mkdirSync(path.dirname(target), { recursive: true });
+  fs.writeFileSync(target, "user edit");
+  upsertModuleStatus(f.installDir, { module: "essentials", status: "success", files: { [rel]: sha256("old") }, merge_dir_files: [rel] });
+  upsertModuleStatus(f.installDir, { module: "requirements", status: "success", files: { [rel]: sha256("old") }, merge_dir_files: [rel] });
+  const s = requirementSandbox(repo);
+  await s.api.update(f.installDir, null, config, false, false, true);
+  assert.equal(fs.readFileSync(target, "utf8"), "user edit");
+  assert.equal((s.output().match(/Keeping .*plugin\.json: modified locally/g) || []).length, 1);
+  for (const entry of Object.values(loadInstalledStatus(f.installDir).modules)) {
+    assert.equal(Object.hasOwn(entry.files || {}, rel), false);
+    assert.equal((entry.merge_dir_files || []).includes(rel), false);
+  }
+
+  const f2 = fixture(t);
+  fs.mkdirSync(path.dirname(path.join(f2.installDir, rel)), { recursive: true });
+  fs.writeFileSync(path.join(f2.installDir, rel), fs.readFileSync(path.join(repo, "agents/requirements", rel)));
+  upsertModuleStatus(f2.installDir, { module: "essentials", status: "success", files: { [rel]: sha256("other") }, merge_dir_files: [rel] });
+  upsertModuleStatus(f2.installDir, { module: "requirements", status: "success", files: { [rel]: sha256("other") }, merge_dir_files: [rel] });
+  const uninstall = requirementSandbox(repo);
+  await uninstall.api.uninstallModule("essentials", config, repo, f2.installDir, false);
+  await uninstall.api.uninstallModule("requirements", config, repo, f2.installDir, false);
+  assert.equal(fs.existsSync(path.join(f2.installDir, rel)), false);
+  assert.deepEqual(loadInstalledStatus(f2.installDir).modules, {});
+});
 
 for (const type of ["copy_file", "copy_dir", "merge_dir"]) {
   test(`I1/I2 ${type}: repeated reinstall, retired ownership, local edits and force`, async (t) => {

@@ -502,7 +502,7 @@ async function mergeDirLooksInstalled(srcDir, installDir) {
   if (!(await dirExists(srcDir))) return false;
   const subdirs = await fs.promises.readdir(srcDir, { withFileTypes: true });
   for (const d of subdirs) {
-    if (!d.isDirectory()) continue;
+    if (!d.isDirectory() || d.name === ".claude-plugin") continue;
     const srcSub = path.join(srcDir, d.name);
     const entries = await fs.promises.readdir(srcSub, { withFileTypes: true });
     for (const e of entries) {
@@ -589,6 +589,7 @@ async function updateInstalledModules(installDir, tag, config, dryRun, explicitF
       return;
     }
     const status = loadInstalledStatus(installDir).modules;
+    if (!dryRun) await migratePluginManifestOwnership(installDir, repoRoot, config);
     const candidates = requestedModules && requestedModules !== "all"
       ? requestedModules.split(",").map(s => s.trim()).filter(Boolean) : fromStatus;
     const toUpdate = candidates.filter((name) => {
@@ -926,7 +927,7 @@ async function mergeDir(src, installDir, force, moduleName, previouslyOwned, exp
   const installed = [];
   const subdirs = await fs.promises.readdir(src, { withFileTypes: true });
   for (const d of subdirs) {
-    if (!d.isDirectory()) continue;
+    if (!d.isDirectory() || d.name === ".claude-plugin") continue;
     const srcSub = path.join(src, d.name);
     const dstSub = path.join(installDir, d.name);
     await fs.promises.mkdir(dstSub, { recursive: true });
@@ -951,6 +952,44 @@ async function mergeDir(src, installDir, force, moduleName, previouslyOwned, exp
     }
   }
   return installed;
+}
+
+async function migratePluginManifestOwnership(installDir, repoRoot, config) {
+  const rel = ".claude-plugin/plugin.json";
+  const status = loadInstalledStatus(installDir);
+  const hashes = new Set();
+  let recorded = false;
+  for (const entry of Object.values(status.modules)) {
+    if (entry.files && Object.prototype.hasOwnProperty.call(entry.files, rel)) {
+      recorded = true;
+      hashes.add(entry.files[rel]);
+      delete entry.files[rel];
+    }
+    if (Array.isArray(entry.merge_dir_files) && entry.merge_dir_files.includes(rel)) {
+      recorded = true;
+      entry.merge_dir_files = entry.merge_dir_files.filter((file) => file !== rel);
+    }
+  }
+  if (!recorded) return;
+  const target = path.join(installDir, rel);
+  if (fs.existsSync(target)) {
+    const bytes = await fs.promises.readFile(target);
+    let matches = hashes.has(fileHash(bytes));
+    if (!matches) {
+      for (const mod of Object.values((config && config.modules) || {})) {
+        for (const op of (mod && Array.isArray(mod.operations) ? mod.operations : [])) {
+          if (op.type !== "merge_dir" || typeof op.source !== "string") continue;
+          const source = path.join(repoRoot, op.source, rel);
+          if (fs.existsSync(source) && bytes.equals(await fs.promises.readFile(source))) matches = true;
+        }
+      }
+    }
+    if (matches) await fs.promises.unlink(target);
+    else process.stdout.write(`Keeping ${target}: modified locally\n`);
+  }
+  if (fs.existsSync(path.dirname(target))) await tryRemoveEmptyDir(path.dirname(target));
+  status.updated_at = new Date().toISOString();
+  saveInstalledStatus(installDir, status);
 }
 
 function installScriptCommand(repoRoot, platform = process.platform) {
@@ -1250,13 +1289,15 @@ async function uninstallModule(moduleName, config, repoRoot, installDir, dryRun)
   if (!mod) throw new Error(`Unknown module: ${moduleName}`);
   const ops = Array.isArray(mod.operations) ? mod.operations : [];
   const status = loadInstalledStatus(installDir);
-  const moduleStatus = (status.modules && status.modules[moduleName]) || {};
+  if (!dryRun) await migratePluginManifestOwnership(installDir, repoRoot, config);
+  const migratedStatus = loadInstalledStatus(installDir);
+  const moduleStatus = (migratedStatus.modules && migratedStatus.modules[moduleName]) || {};
   const recordedMerge = Array.isArray(moduleStatus.merge_dir_files) ? moduleStatus.merge_dir_files : null;
   const hasFiles = isPlainObject(moduleStatus.files);
   const recordedFiles = ownershipFiles(moduleStatus);
   const keptMerge = new Set();
   function sharedFiles(rel) {
-    return Object.entries(status.modules).filter(([name, entry]) => {
+    return Object.entries(migratedStatus.modules).filter(([name, entry]) => {
       if (name === moduleName || !["installed", "success", "partial_uninstall"].includes(entry.status)) return false;
       if (Object.prototype.hasOwnProperty.call(ownershipFiles(entry), rel) ||
           (Array.isArray(entry.merge_dir_files) && entry.merge_dir_files.filter(canonicalFileKey).includes(rel))) return true;
