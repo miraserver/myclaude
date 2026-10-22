@@ -2,6 +2,21 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### Bug Fixes
+
+- Fix legacy `merge_dir` uninstall ownership, preserve shared course/standalone files, and relocate restored agent `prompt_file` paths.
+- Detect lost wrapper final output as a failure while ignoring trailing output after completion.
+- Withdraw releases only after smoke-test failures; decode hook stdin with BOM support.
+- Handle corrupt `do` registries, retry registry lock-file opens, and quote `DO_WORKTREE_DIR` exports.
+- Lock SPARV project registry updates and support bmad reviews without a sprint plan.
+
+### Notes
+
+- Installs recorded by v6.10.0 or older, and v6.10.1 `merge_dir` files, have no per-file hashes. The first `--update` cannot detect local edits and overwrites them; protection applies from the next update on. Back up edited files first.
+- SPARV sessions initialized before 6.11.0 must rerun `init-session.sh` without `--force` to re-enable hooks.
+
 ## [6.11.0] - 2026-10-22
 
 ### Security
