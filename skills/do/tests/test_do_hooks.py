@@ -63,6 +63,19 @@ class DoHookTests(unittest.TestCase):
             )
         self.session_id = "session-a"
 
+    def test_utf8_payload_under_ansi_stdio(self):
+        self._create_task("unfinished")
+        for encoding in ("cp1251", "cp1252"):
+            payload = {"cwd": str(self.project), "session_id": "комментарий 😀"}
+            result = subprocess.run(
+                [sys.executable, str(HOOK)],
+                input=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+                env={**self.environment, "PYTHONIOENCODING": encoding},
+                capture_output=True, cwd=self.project,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(json.loads(result.stdout)["decision"], "block")
+
     def tearDown(self):
         self.temp_dir.cleanup()
 
@@ -684,7 +697,7 @@ class DoHookTests(unittest.TestCase):
         self.assertFalse((self.project / "untrusted-command").exists())
         self.assertEqual(self._read_task()[0]["status"], "completed")
 
-    def test_corrupt_registry_ignores_task_and_set_verify_repairs_it(self):
+    def test_corrupt_registry_ignores_task_and_preserves_repairable_data(self):
         self._create_task()
         self._set_task(current_phase=5, verify_command=python_command(
             "from pathlib import Path;Path('registered-command').touch()"))
@@ -699,6 +712,10 @@ class DoHookTests(unittest.TestCase):
                 self.assertIn("Warning", result.stderr)
                 self.assertEqual(self._read_task(), before)
                 self.assertFalse((self.project / "registered-command").exists())
+        with self.assertRaises(ValueError):
+            task.register_task(str(self.project), str(self._current_task_dir() / "task.md"), "echo safe", "now")
+        self.assertEqual(task.registry_path().read_text(encoding="utf-8"), content)
+        task.registry_path().write_text("{}", encoding="utf-8")
         self.assertTrue(task.set_verify(before[0]["verify_command"]))
         self.assertEqual(self._stop().returncode, 0)
         self.assertTrue((self.project / "registered-command").is_file())

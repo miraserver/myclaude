@@ -1,12 +1,12 @@
 """Registry transactions remain reliable under contention and sharing violations."""
 import importlib.util
-import json
 import os
 from pathlib import Path
 import stat
 import subprocess
 import sys
 import time
+from types import SimpleNamespace
 
 import pytest
 
@@ -77,43 +77,71 @@ else:
         str((tmp_path / f"{worker}-{i}").resolve())
         for worker in range(4) for i in range(60)}
     assert set(registry.load_registry()) == expected
-    assert not registry.registry_path().with_name("registry.lock").exists()
+    assert registry.registry_path().with_name("registry.lock").exists()
     assert not list(registry.registry_path().parent.glob("registry-*.tmp"))
     if os.name == "posix":
         assert stat.S_IMODE(registry.registry_path().stat().st_mode) == 0o600
 
 
-def test_stale_lock_is_broken(tmp_path):
-    register(tmp_path / "seed")
+@pytest.mark.parametrize("content", [b"", b"dead:token", b"\x00\xffarbitrary old content\n"])
+def test_leftover_lock_does_not_block(tmp_path, content):
     lock = registry.registry_path().with_name("registry.lock")
-    lock.touch()
-    old = time.time() - 31
-    os.utime(lock, (old, old))
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    lock.write_bytes(content)
+    started = time.monotonic()
     register(tmp_path / "added")
+    assert time.monotonic() - started < 2
     assert str((tmp_path / "added").resolve()) in set(registry.load_registry())
-    assert not lock.exists()
+    assert lock.read_bytes() == content
 
 
-def test_live_holder_times_out_without_changing_registry(tmp_path):
+@pytest.fixture
+def lock_holder(tmp_path):
     register(tmp_path / "seed")
-    before = registry.registry_path().read_bytes()
-    lock = registry.registry_path().with_name("registry.lock")
-    holder = subprocess.Popen([sys.executable, "-u", "-c",
-        "import os,sys;fd=os.open(sys.argv[1],os.O_CREAT|os.O_EXCL|os.O_WRONLY);"
-        "os.close(fd);print('ready',flush=True);sys.stdin.read()", str(lock)],
-        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    code = """
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location("lock_holder", sys.argv[1])
+m = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(m)
+with m._registry_lock():
+    print("ready", flush=True)
+    sys.stdin.read()
+"""
+    process = subprocess.Popen([sys.executable, "-c", code, str(MODULE)],
+                               stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     try:
-        assert holder.stdout.readline().strip() == b"ready"
-        started = time.monotonic()
-        with pytest.raises(TimeoutError, match="Timed out waiting for registry lock"):
-            register(tmp_path / "blocked")
-        assert 4.9 <= time.monotonic() - started < 8
-        assert holder.poll() is None
-        assert registry.registry_path().read_bytes() == before
-        assert lock.exists()
+        assert process.stdout.readline().strip() == b"ready"
+        yield process
     finally:
-        holder.communicate(input=b"", timeout=5)
-        lock.unlink(missing_ok=True)
+        if process.poll() is None:
+            process.kill()
+        process.communicate(timeout=5)
+
+
+def test_live_holder_times_out_without_changing_registry(tmp_path, monkeypatch, lock_holder):
+    path = registry.registry_path()
+    before = path.read_bytes()
+    # Speed up only the lock's deadline clock, keeping subprocess clocks real.
+    monkeypatch.setattr(registry, "time", SimpleNamespace(
+        monotonic=lambda: time.monotonic() * 25, sleep=time.sleep))
+    started = time.monotonic()
+    with pytest.raises(TimeoutError, match="Timed out waiting for registry lock"):
+        register(tmp_path / "blocked")
+    assert 0.19 <= time.monotonic() - started < 2
+    assert lock_holder.poll() is None
+    assert path.read_bytes() == before
+    assert path.with_name("registry.lock").exists()
+
+
+@pytest.mark.parametrize("method", ["kill", "terminate"])
+def test_process_death_releases_lock(tmp_path, lock_holder, method):
+    getattr(lock_holder, method)()
+    lock_holder.communicate(timeout=5)
+    started = time.monotonic()
+    register(tmp_path / "recovered")
+    assert time.monotonic() - started < 2
+    assert str((tmp_path / "recovered").resolve()) in set(registry.load_registry())
+    assert registry.registry_path().with_name("registry.lock").exists()
 
 
 @pytest.mark.parametrize("operation", ["read", "replace"])
@@ -150,7 +178,7 @@ def test_permission_errors_are_retried(tmp_path, monkeypatch, operation, persist
         else:
             register(tmp_path / "added")
             assert str((tmp_path / "added").resolve()) in set(registry.load_registry())
-        assert not registry.registry_path().with_name("registry.lock").exists()
+        assert registry.registry_path().with_name("registry.lock").exists()
         assert not list(registry.registry_path().parent.glob("registry-*.tmp"))
     assert len(calls) >= 3
 
@@ -165,19 +193,23 @@ def test_malformed_json_fails_closed_without_retry(tmp_path, monkeypatch):
     assert not registry.load_registry()
 
 
-def test_lock_creation_sharing_violation_is_retried(tmp_path, monkeypatch):
+@pytest.mark.parametrize("failure", ["permission", "oserror", "malformed", "schema"])
+def test_writer_never_overwrites_unreadable_registry(tmp_path, monkeypatch, failure):
     register(tmp_path / "seed")
-    original = registry.os.open
-    attempts = []
-
-    def open_lock(path, *args, **kwargs):
-        if Path(path).name == "registry.lock":
-            attempts.append(path)
-            if len(attempts) == 1:
-                raise PermissionError("lock deletion in progress")
-        return original(path, *args, **kwargs)
-
-    monkeypatch.setattr(registry.os, "open", open_lock)
-    register(tmp_path / "added")
-    assert len(attempts) == 2
-    assert str((tmp_path / "added").resolve()) in set(registry.load_registry())
+    path = registry.registry_path()
+    if failure in ("malformed", "schema"):
+        path.write_text("{" if failure == "malformed" else "[]", encoding="utf-8")
+    before = path.read_bytes()
+    if failure in ("permission", "oserror"):
+        original = Path.read_text
+        def denied(self, *args, **kwargs):
+            if self == path:
+                raise PermissionError("persistent") if failure == "permission" else OSError("read failed")
+            return original(self, *args, **kwargs)
+        monkeypatch.setattr(Path, "read_text", denied)
+        clock = [0.0]
+        monkeypatch.setattr(registry.time, "monotonic", lambda: clock[0])
+        monkeypatch.setattr(registry.time, "sleep", lambda n: clock.__setitem__(0, clock[0] + n))
+    with pytest.raises((OSError, ValueError)):
+        register(tmp_path / "new")
+    assert path.read_bytes() == before

@@ -50,33 +50,44 @@ def registry_path() -> Path:
 
 @contextmanager
 def _registry_lock():
-    """Serialize registry updates across independently running processes."""
+    """Hold an OS lock for the entire registry transaction.
+
+    Keep the lock file: unlinking it could split waiters across two inodes.
+    The OS releases the lock automatically if the process exits.
+    """
     path = registry_path().with_name("registry.lock")
     path.parent.mkdir(parents=True, exist_ok=True)
-    deadline = time.monotonic() + 5.0
-    while True:
-        try:
-            descriptor = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
-        except (FileExistsError, PermissionError):
-            # Windows can deny creation while a previous lock is being deleted.
-            try:
-                if time.time() - path.stat().st_mtime > 30.0:
-                    path.unlink()
-                    continue
-            except FileNotFoundError:
-                pass
-            except PermissionError:
-                pass
-            if time.monotonic() >= deadline:
-                raise TimeoutError("Timed out waiting for registry lock: " + str(path))
-            time.sleep(0.02)
-        else:
-            break
+    fd = os.open(path, os.O_CREAT | os.O_RDWR, 0o600)
     try:
-        os.close(descriptor)
-        yield
+        if os.name == "nt":
+            import msvcrt
+            def acquire():
+                os.lseek(fd, 0, os.SEEK_SET)
+                msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+            def release():
+                os.lseek(fd, 0, os.SEEK_SET)
+                msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+        else:
+            import fcntl
+            def acquire():
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            def release():
+                fcntl.flock(fd, fcntl.LOCK_UN)
+        deadline = time.monotonic() + 5.0
+        while True:
+            try:
+                acquire()
+                break
+            except OSError:
+                if time.monotonic() >= deadline:
+                    raise TimeoutError("Timed out waiting for registry lock: " + str(path))
+                time.sleep(0.02)
+        try:
+            yield
+        finally:
+            release()
     finally:
-        path.unlink(missing_ok=True)
+        os.close(fd)
 
 
 def _registry_retry(operation, timeout):
@@ -91,8 +102,8 @@ def _registry_retry(operation, timeout):
             time.sleep(0.02)
 
 
-def load_registry() -> dict:
-    """Fail closed for missing or malformed user-local authorization."""
+def load_registry(*, strict=False) -> dict:
+    """Fail closed for readers; strict writers preserve unreadable files."""
     try:
         registry = json.loads(_registry_retry(
             lambda: registry_path().read_text(encoding="utf-8"), 1.0))
@@ -107,7 +118,11 @@ def load_registry() -> dict:
                         or not isinstance(entry.get("created_at"), str)):
                     raise ValueError("invalid task entry")
         return registry
+    except FileNotFoundError:
+        return {}
     except (OSError, ValueError) as error:
+        if strict:
+            raise
         print(f"Warning: Cannot read do registry; treating as empty: {error}", file=sys.stderr)
         return {}
 
@@ -124,7 +139,7 @@ def registered_task(project_root: str, task_md_path: str) -> dict | None:
 def register_task(project_root: str, task_md_path: str, command: str, created_at: str) -> None:
     """Atomically persist commands authorized through task creation/set-verify."""
     with _registry_lock():
-        registry = load_registry()
+        registry = load_registry(strict=True)
         project = str(Path(project_root).resolve())
         name = Path(task_md_path).resolve().parent.name
         tasks = registry.setdefault(project, {})

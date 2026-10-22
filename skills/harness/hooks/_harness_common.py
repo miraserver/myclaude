@@ -55,7 +55,7 @@ def read_hook_payload(*, invalid_json: bool = False) -> dict[str, Any]:
     """Read JSON payload from stdin (sent by Claude Code to command hooks)."""
     try:
         # Hook payloads are UTF-8, independently of the console code page.
-        raw = sys.stdin.buffer.read().decode("utf-8-sig")
+        raw = sys.stdin.buffer.read().decode("utf-8-sig", errors="replace")
         if not raw.strip():
             return {}
         data = json.loads(raw)
@@ -112,33 +112,44 @@ def registry_path() -> Path:
 
 @contextmanager
 def _registry_lock():
-    """Serialize registry updates across independently running processes."""
+    """Hold an OS lock for the entire registry transaction.
+
+    Keep the lock file: unlinking it could split waiters across two inodes.
+    The OS releases the lock automatically if the process exits.
+    """
     path = registry_path().with_name("registry.lock")
     path.parent.mkdir(parents=True, exist_ok=True)
-    deadline = time.monotonic() + 5.0
-    while True:
-        try:
-            descriptor = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
-        except (FileExistsError, PermissionError):
-            # Windows can deny creation while a previous lock is being deleted.
-            try:
-                if time.time() - path.stat().st_mtime > 30.0:
-                    path.unlink()
-                    continue
-            except FileNotFoundError:
-                pass
-            except PermissionError:
-                pass
-            if time.monotonic() >= deadline:
-                raise TimeoutError("Timed out waiting for registry lock: " + str(path))
-            time.sleep(0.02)
-        else:
-            break
+    fd = os.open(path, os.O_CREAT | os.O_RDWR, 0o600)
     try:
-        os.close(descriptor)
-        yield
+        if os.name == "nt":
+            import msvcrt
+            def acquire():
+                os.lseek(fd, 0, os.SEEK_SET)
+                msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+            def release():
+                os.lseek(fd, 0, os.SEEK_SET)
+                msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+        else:
+            import fcntl
+            def acquire():
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            def release():
+                fcntl.flock(fd, fcntl.LOCK_UN)
+        deadline = time.monotonic() + 5.0
+        while True:
+            try:
+                acquire()
+                break
+            except OSError:
+                if time.monotonic() >= deadline:
+                    raise TimeoutError("Timed out waiting for registry lock: " + str(path))
+                time.sleep(0.02)
+        try:
+            yield
+        finally:
+            release()
     finally:
-        path.unlink(missing_ok=True)
+        os.close(fd)
 
 
 def _registry_retry(operation, timeout):
@@ -153,8 +164,8 @@ def _registry_retry(operation, timeout):
             time.sleep(0.02)
 
 
-def load_registry() -> dict[str, Any]:
-    """Missing or malformed local authorization silently fails closed."""
+def load_registry(*, strict=False) -> dict[str, Any]:
+    """Fail closed for readers; strict writers preserve unreadable files."""
     try:
         data = json.loads(_registry_retry(
             lambda: registry_path().read_text(encoding="utf-8"), 1.0))
@@ -164,10 +175,14 @@ def load_registry() -> dict[str, Any]:
                 or not isinstance(data.get("reflections", {}), dict)
                 or not all(isinstance(root, str) and isinstance(session, str)
                            for root, session in data.get("reflections", {}).items())):
-            return {"roots": [], "reflections": {}}
+            raise ValueError("invalid harness registry")
         data.setdefault("reflections", {})
         return data
+    except FileNotFoundError:
+        return {"roots": [], "reflections": {}}
     except (OSError, ValueError):
+        if strict:
+            raise
         return {"roots": [], "reflections": {}}
 
 
@@ -196,7 +211,7 @@ def registered_root(root: Path) -> bool:
 def register_root(root: Path) -> None:
     root = root.resolve()
     with _registry_lock():
-        data = load_registry()
+        data = load_registry(strict=True)
         data["roots"] = sorted(set(data["roots"]) | {str(root)})
         data["reflections"].pop(str(root), None)
         _write_registry(data)
@@ -213,7 +228,7 @@ def deactivate_harness(root: Path, *, reflection_session: str = "") -> None:
     root = root.resolve()
     (root / ".harness-active").unlink(missing_ok=True)
     with _registry_lock():
-        data = load_registry()
+        data = load_registry(strict=True)
         data["roots"] = [entry for entry in data["roots"] if entry != str(root)]
         data["reflections"].pop(str(root), None)
         if reflection_session:
@@ -224,7 +239,7 @@ def deactivate_harness(root: Path, *, reflection_session: str = "") -> None:
 
 def clear_reflection(root: Path) -> None:
     with _registry_lock():
-        data = load_registry()
+        data = load_registry(strict=True)
         if data["reflections"].pop(str(root.resolve()), None) is not None:
             _write_registry(data)
 
