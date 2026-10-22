@@ -30,7 +30,7 @@ sparv_state_validate_or_die
 TOOL_NAME="${1:-unknown}"
 RESULT="${2:-no result}"
 if [ "${1:-}" = "--hook" ]; then
-    TOOL_NAME="$(python3 -c 'import json,sys; print(json.load(sys.stdin).get("tool_name", "unknown"))')"
+    TOOL_NAME="$(sparv_python -c 'import json,sys; print(json.loads(sys.stdin.buffer.read().decode("utf-8", errors="replace")).get("tool_name", "unknown"))')"
     RESULT="completed"
 fi
 

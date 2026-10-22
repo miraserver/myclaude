@@ -153,3 +153,5 @@ Archive current session:
 ---
 
 *Quality over speed—iterate until truly complete.*
+
+Hooks run only for active sessions in projects authorized by `init-session.sh` in the user-local `~/.claude/sparv-state/projects` list. `archive-session.sh` removes authorization. Stop allows handover at iteration/failure limits and skips repeated Stop callbacks (`stop_hook_active`). Scripts select `python3`, `python`, or `py -3`.

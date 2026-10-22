@@ -1,4 +1,6 @@
 #!/bin/bash
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/python.sh"
+
 #
 # Shared helpers for .sparv state operations.
 # Supports new directory structure: .sparv/plan/<session_id>/

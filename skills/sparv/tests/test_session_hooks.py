@@ -64,3 +64,59 @@ def test_hook_paths_and_blocking_policy():
         assert '${SKILL_PATH}' not in command and '${TOOL_NAME' not in command
         assert ('|| true' in command) == (event != 'Stop')
     assert 'exit 2' in hooks['Stop'][0]['hooks'][0]['command']
+
+
+@pytest.mark.parametrize("event", ["Stop", "PostToolUse", "PreToolUse"])
+def test_unauthorized_state_is_inert(tmp_path, event):
+    newest = sessions(tmp_path)
+    before = {p: p.read_bytes() for p in newest.iterdir()}
+    result = bash(tmp_path, "session-hook.sh", event)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == result.stderr == b""
+    assert before == {p: p.read_bytes() for p in newest.iterdir()}
+
+
+def test_archived_stop_allows_exit(tmp_path):
+    assert bash(tmp_path, "init-session.sh", "feature").returncode == 0
+    assert (tmp_path / "home/.claude/sparv-state/projects").read_text().strip()
+    assert bash(tmp_path, "archive-session.sh").returncode == 0
+    assert not (tmp_path / "home/.claude/sparv-state/projects").read_text().strip()
+    result = bash(tmp_path, "session-hook.sh", "Stop")
+    assert result.returncode == 0 and result.stdout == result.stderr == b""
+
+
+@pytest.mark.parametrize("mode", ["strict", "iterations", "failures", "recursive"])
+def test_authorized_stop_policy(tmp_path, mode):
+    assert bash(tmp_path, "init-session.sh", "feature").returncode == 0
+    state = next((tmp_path / ".sparv/plan").glob("*/state.yaml"))
+    text = state.read_text()
+    if mode == "iterations":
+        text = text.replace("iteration_count: 0", "iteration_count: 12")
+    if mode == "failures":
+        text = text.replace("consecutive_failures: 0", "consecutive_failures: 3")
+    state.write_text(text)
+    result = bash(tmp_path, "session-hook.sh", "Stop", payload={"stop_hook_active": mode == "recursive"})
+    assert result.returncode == (2 if mode == "strict" else 0), result.stderr
+    if mode in ("iterations", "failures"):
+        assert b"escalation" in result.stderr
+    if mode == "recursive":
+        assert result.stdout == result.stderr == b""
+
+
+def test_python_helper_falls_back_to_python(tmp_path):
+    # Use wrappers to make python3 unavailable without changing the real PATH.
+    result = bash(tmp_path, "init-session.sh", "feature")
+    assert result.returncode == 0, result.stderr
+    script = tmp_path / "fallback.sh"
+    import sys
+    executable = sys.executable.replace(chr(92), "/")
+    script.write_text(
+        'source skill/scripts/lib/python.sh\n'
+        'command() { if [ "$1" = -v ] && [ "$2" = python3 ]; then return 1; fi; builtin command "$@"; }\n'
+        f'python() {{ "{executable}" "$@"; }}\n'
+        'sparv_python -c "print(42)"\n'
+    )
+    result = subprocess.run([BASH, "fallback.sh"], cwd=tmp_path,
+                            env={**os.environ, "HOME": str(tmp_path / "home"), "USERPROFILE": str(tmp_path / "home")},
+                            capture_output=True)
+    assert result.returncode == 0 and result.stdout.strip() == b"42", result.stderr

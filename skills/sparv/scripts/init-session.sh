@@ -168,6 +168,7 @@ active_session="$(find_active_session)"
 
 if [ -n "$active_session" ]; then
 	if [ "$force" -eq 0 ]; then
+		sparv_python "$SCRIPT_DIR/lib/projects.py" add
 		echo "⚠️  Active session exists: $active_session"
 		echo "   Use --force to archive and start new session"
 		echo "   Or run: archive-session.sh"
@@ -225,6 +226,8 @@ if [ ! -f "$SESSION_DIR/state.yaml" ] || [ ! -f "$SESSION_DIR/journal.md" ]; the
 	echo "❌ Failed to create files"
 	exit 1
 fi
+
+sparv_python "$SCRIPT_DIR/lib/projects.py" add
 
 echo "✅ SPARV session: $SESSION_ID"
 [ -n "$feature_name" ] && echo "📝 Feature: $feature_name"

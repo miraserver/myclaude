@@ -7,7 +7,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "if [ -d .sparv/plan ]; then bash \"${CLAUDE_PLUGIN_ROOT}/scripts/save-progress.sh\" --hook || true; fi"
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/scripts/session-hook.sh\" PostToolUse || true"
           }
         ]
       }
@@ -18,7 +18,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "if [ -d .sparv/plan ]; then bash \"${CLAUDE_PLUGIN_ROOT}/scripts/check-ehrb.sh\" --diff --dry-run || true; fi"
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/scripts/session-hook.sh\" PreToolUse || true"
           }
         ]
       }
@@ -28,7 +28,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "if [ -d .sparv/plan ]; then bash \"${CLAUDE_PLUGIN_ROOT}/scripts/reboot-test.sh\" --strict || exit 2; fi"
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/scripts/session-hook.sh\" Stop || exit 2"
           }
         ]
       }

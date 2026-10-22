@@ -69,6 +69,7 @@ update_history_index() {
 SESSION_ID="$(find_active_session)"
 
 if [ -z "$SESSION_ID" ]; then
+	[ "$dry_run" -eq 1 ] || sparv_python "$SCRIPT_DIR/lib/projects.py" remove
 	echo "No active session to archive"
 	exit 0
 fi
@@ -84,6 +85,8 @@ fi
 # Create history directory and move session
 mkdir -p "$HISTORY_DIR"
 mv "$SRC_DIR" "$DST_DIR"
+
+sparv_python "$SCRIPT_DIR/lib/projects.py" remove
 
 # Update index
 update_history_index "$SESSION_ID"
