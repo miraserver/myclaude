@@ -542,7 +542,7 @@ async function detectInstalledModuleNames(config, repoRoot, installDir) {
   return installed.sort();
 }
 
-async function updateInstalledModules(installDir, tag, config, dryRun, explicitForce = false, offline = false) {
+async function updateInstalledModules(installDir, tag, config, dryRun, explicitForce = false, offline = false, requestedModules = null) {
   validateInstallJson(installDir);
   const mods = (config && config.modules) || {};
   if (!Object.keys(mods).length) throw new Error("No modules found in config.json");
@@ -575,8 +575,29 @@ async function updateInstalledModules(installDir, tag, config, dryRun, explicitF
     }
 
     const fromStatus = readInstalledModuleNamesFromStatus(installDir);
-    const installed = fromStatus || (await detectInstalledModuleNames(config, repoRoot, installDir));
-    const toUpdate = installed.filter((name) => Object.prototype.hasOwnProperty.call(mods, name));
+    if (fromStatus === null) {
+      const detected = await detectInstalledModuleNames(config, repoRoot, installDir);
+      process.stdout.write(`No installation status found. Detected: ${detected.join(", ") || "none"}.${detected.length ? ` Run: npx github:miraserver/myclaude --module ${detected.join(",")} --update` : ""}\n`);
+      if (requestedModules && requestedModules !== "all") {
+        for (const name of requestedModules.split(",").map(s => s.trim()).filter(Boolean)) {
+          process.stdout.write(`${name} is not installed; run without --update to install it\n`);
+        }
+      }
+      return;
+    }
+    const status = loadInstalledStatus(installDir).modules;
+    const candidates = requestedModules && requestedModules !== "all"
+      ? requestedModules.split(",").map(s => s.trim()).filter(Boolean) : fromStatus;
+    const toUpdate = candidates.filter((name) => {
+      const entry = status[name];
+      if (!Object.prototype.hasOwnProperty.call(status, name) ||
+          !isPlainObject(entry) || (Object.prototype.hasOwnProperty.call(entry, "status") &&
+          !["installed", "success"].includes(entry.status))) {
+        process.stdout.write(`${name} is not installed; run without --update to install it\n`);
+        return false;
+      }
+      return Object.prototype.hasOwnProperty.call(mods, name);
+    });
 
     if (!toUpdate.length) {
       process.stdout.write(`No installed modules found in ${installDir}.\n`);
@@ -874,7 +895,7 @@ async function mergeDir(src, installDir, force, moduleName, previouslyOwned, exp
 
 function installScriptCommand(repoRoot, platform = process.platform) {
   return platform === "win32"
-    ? { cmd: "cmd.exe", args: ["/c", path.join(repoRoot, "install.bat")] }
+    ? { cmd: "cmd.exe", args: ["/d", "/s", "/c", `""${path.join(repoRoot, "install.bat")}""`], windowsVerbatimArguments: true }
     : { cmd: "bash", args: [path.join(repoRoot, "install.sh")] };
 }
 
@@ -889,13 +910,15 @@ function runInstallSh(repoRoot, installDir, tag, offline = false) {
   }
   return new Promise((resolve, reject) => {
     const { cmd, args } = installScriptCommand(repoRoot);
-    const env = { ...process.env, INSTALL_DIR: installDir };
+    const env = { ...process.env, INSTALL_DIR: installDir, SKIP_WARNING: "1" };
     if (tag) env.CODEAGENT_WRAPPER_VERSION = tag;
     const p = spawn(cmd, args, {
       cwd: repoRoot,
       stdio: "inherit",
       env,
+      ...(cmd === "cmd.exe" ? { windowsVerbatimArguments: true } : {}),
     });
+    p.on("error", (err) => reject(new Error(`Unable to start install script (${cmd}): ${err.message}`)));
     p.on("exit", (code) => {
       if (code === 0) resolve();
       else reject(new Error(`install script failed (exit ${code})`));
@@ -1231,6 +1254,15 @@ async function installDefaultConfigs(installDir, repoRoot) {
       await fs.promises.copyFile(claudeMdSrc, claudeMdTarget);
       process.stdout.write(`Installed CLAUDE.md to ${claudeMdTarget}\n`);
     }
+    const skillTarget = path.join(installDir, "skills", "codeagent", "SKILL.md");
+    if (fs.existsSync(claudeMdTarget) && fs.existsSync(claudeMdSrc) &&
+        fs.readFileSync(claudeMdTarget).equals(fs.readFileSync(claudeMdSrc)) &&
+        !fs.existsSync(skillTarget)) {
+      await fs.promises.mkdir(path.dirname(skillTarget), { recursive: true });
+      await fs.promises.copyFile(path.join(repoRoot, "skills", "codeagent", "SKILL.md"),
+        skillTarget, fs.constants.COPYFILE_EXCL);
+      process.stdout.write("Installed codeagent skill (required by CLAUDE.md)\n");
+    }
   } catch (err) {
     process.stderr.write(`Warning: could not install default configs: ${err.message}\n`);
   }
@@ -1356,6 +1388,15 @@ async function installSelected(picks, tag, config, installDir, force, dryRun, of
         continue;
       }
       if (p.kind === "skill") {
+        if (Object.prototype.hasOwnProperty.call((config && config.modules) || {}, p.skillName)) {
+          const moduleName = p.skillName;
+          if (WRAPPER_REQUIRED_MODULES.has(moduleName)) await ensureWrapperInstalled();
+          process.stdout.write(`Skill ${p.skillName} matches module ${moduleName}; installing the module instead.\n`);
+          const r = await applyModule(moduleName, config, repoRoot, installDir, force, tag,
+            installState, force, offline);
+          upsertModuleStatus(installDir, r);
+          continue;
+        }
         if (WRAPPER_REQUIRED_SKILLS.has(p.skillName)) await ensureWrapperInstalled();
         process.stdout.write(`Installing skill: ${p.skillName}\n`);
         await copyDirRecursive(
@@ -1483,7 +1524,7 @@ async function main() {
   if (!skills.length) skills = listLocalSkills();
 
   if (args.update) {
-    await updateInstalledModules(installDir, tag, config, args.dryRun, args.force, args.offline);
+    await updateInstalledModules(installDir, tag, config, args.dryRun, args.force, args.offline, args.module);
     process.stdout.write("Done.\n");
     return;
   }
@@ -1506,6 +1547,7 @@ async function main() {
 }
 
 module.exports = {
+  installDefaultConfigs,
   applyModule,
   upsertModuleStatus,
   loadInstalledStatus,

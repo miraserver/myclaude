@@ -1,6 +1,10 @@
 """Installer regression tests; run with unittest and no added dependencies."""
 
 import copy
+import contextlib
+import io
+import os
+import subprocess
 import importlib.util
 import json
 from pathlib import Path
@@ -29,6 +33,9 @@ class InstallerJsonTests(unittest.TestCase):
         home = mock.patch.object(installer.Path, "home", return_value=self.root)
         home.start()
         self.addCleanup(home.stop)
+        environment = mock.patch.dict(os.environ, {"HOME": str(self.root), "USERPROFILE": str(self.root)})
+        environment.start()
+        self.addCleanup(environment.stop)
         self.models = self.root / ".codeagent" / "models.json"
         self.hooks = {"hooks": {"Stop": [{"hooks": [{"type": "command", "command": "echo ok"}]}]}}
 
@@ -38,6 +45,40 @@ class InstallerJsonTests(unittest.TestCase):
 
     def read_json(self, path):
         return json.loads(path.read_text(encoding="utf-8-sig"))
+
+    def test_default_configs_install_codeagent_dependency_safely(self):
+        config = json.loads((ROOT / "config.json").read_text(encoding="utf-8-sig"))
+        for scenario in ("fresh", "matching CLAUDE.md", "user CLAUDE.md", "existing skill"):
+            with self.subTest(scenario=scenario), tempfile.TemporaryDirectory() as temporary:
+                install_dir = Path(temporary)
+                ctx = {**self.ctx, "install_dir": install_dir, "config_dir": ROOT,
+                       "status_file": install_dir / "installed_modules.json"}
+                claude = install_dir / "CLAUDE.md"
+                skill = install_dir / "skills/codeagent/SKILL.md"
+                if scenario == "matching CLAUDE.md":
+                    claude.write_bytes((ROOT / "memorys/CLAUDE.md").read_bytes())
+                if scenario == "user CLAUDE.md":
+                    claude.write_bytes(b"user instructions\n")
+                if scenario == "existing skill":
+                    skill.parent.mkdir(parents=True)
+                    skill.write_bytes(b"user skill\n")
+                result = installer.execute_module("harness", config["modules"]["harness"], ctx)
+                self.assertEqual(result["status"], "success")
+                with contextlib.redirect_stdout(io.StringIO()) as output:
+                    installer.install_default_configs(ctx)
+                if scenario == "user CLAUDE.md":
+                    self.assertEqual(claude.read_bytes(), b"user instructions\n")
+                    self.assertFalse(skill.exists())
+                else:
+                    self.assertEqual(claude.read_bytes(), (ROOT / "memorys/CLAUDE.md").read_bytes())
+                    expected = b"user skill\n" if scenario == "existing skill" else (ROOT / "skills/codeagent/SKILL.md").read_bytes()
+                    self.assertEqual(skill.read_bytes(), expected)
+                self.assertEqual("Installed codeagent skill (required by CLAUDE.md)" in output.getvalue(),
+                                 scenario in ("fresh", "matching CLAUDE.md"))
+                result = installer.uninstall_module("harness", config["modules"]["harness"], ctx)
+                self.assertEqual(result["status"], "success")
+                if scenario != "user CLAUDE.md":
+                    self.assertTrue(skill.exists())
 
     def test_wrapper_path_is_platform_specific(self):
         with mock.patch.object(installer.sys, "platform", "win32"), mock.patch.dict(
@@ -257,5 +298,282 @@ class PackageTests(unittest.TestCase):
         self.assertIn("config.schema.json", package["files"])
 
 
+class InstallerRequirementsTests(unittest.TestCase):
+    setUp = InstallerJsonTests.setUp
+    read_json = InstallerJsonTests.read_json
+
+    def save(self, path, data):
+        installer._save_json(path, data)
+
+    def run_main(self, modules, *args):
+        config = {"modules": modules}
+        path = self.root / "config.json"
+        self.save(path, config)
+        output = io.StringIO()
+        with mock.patch.object(installer, "load_config", return_value=config), \
+                mock.patch.object(installer, "install_default_configs"), \
+                mock.patch.object(installer, "print_post_install_info"), \
+                contextlib.redirect_stdout(output), contextlib.redirect_stderr(output):
+            code = installer.main(["--config", str(path), "--install-dir", str(self.root), *args])
+        return code, output.getvalue()
+
+    def foreign_hooks(self):
+        return [{**({"__module__": owner} if owner != "user" else {}), "hooks": [{"command": command}]} for owner, command in (
+            ("herdr", r'python "C:\herdr\stop.py"'),
+            ("orca", r'cmd /c C:\orca\hook.cmd'),
+            ("user", r'echo C:\users\me\notes'))]
+
+    def test_i1_rollback_restores_merges_overwrites_and_status_even_with_force(self):
+        for force in (False, True):
+            with self.subTest(force=force):
+                settings = self.root / "settings.json"
+                original = {"hooks": {"Stop": self.foreign_hooks()}, "user": "keep"}
+                self.save(settings, original)
+                models = {"agents": {"foreign": {"model": "mine"}}}
+                self.save(self.models, models)
+                before_settings, before_models = settings.read_bytes(), self.models.read_bytes()
+                source = self.root / "source"
+                source.mkdir(exist_ok=True)
+                self.save(source / "hooks.json", self.hooks)
+                merge = self.root / "merge" / "agents"
+                merge.mkdir(parents=True, exist_ok=True)
+                (merge / "new.md").write_text("new")
+                (merge / "old.md").write_text("replacement")
+                old = self.root / "agents" / "old.md"
+                old.parent.mkdir(exist_ok=True)
+                old.write_text("original")
+                previous = {"modules": {"existing": {"status": "success"}}}
+                self.save(self.ctx["status_file"], previous)
+                modules = {
+                    "first": {"operations": [
+                        {"type": "copy_dir", "source": "source", "target": "skills/first"},
+                        {"type": "merge_dir", "source": "merge"}],
+                        "agents": {"develop": {"model": "new"}}},
+                    "broken": {"operations": [{"type": "invalid"}]}}
+                code, _ = self.run_main(modules, "--module", "first,broken", *(["--force"] if force else []))
+                self.assertEqual(code, 0 if force else 1)
+                self.assertEqual(settings.read_bytes(), before_settings)
+                self.assertEqual(self.models.read_bytes(), before_models)
+                self.assertEqual(old.read_text(), "original")
+                self.assertFalse((old.parent / "new.md").exists())
+                self.assertFalse((self.root / "skills/first").exists())
+                self.assertEqual(self.read_json(self.ctx["status_file"])["modules"], previous["modules"])
+
+    def test_i1_failed_module_merges_are_undone(self):
+        self.save(self.root / "settings.json", {"hooks": {"Stop": self.foreign_hooks()}})
+        before = (self.root / "settings.json").read_bytes()
+        source = self.root / "hooks-source"
+        source.mkdir()
+        self.save(source / "hooks.json", self.hooks)
+        module = {"operations": [{"type": "copy_dir", "source": "hooks-source", "target": "hooks/demo"}],
+                  "agents": {"agent": {"model": "new"}}}
+        merge_agents = installer.merge_agents_to_models
+        def fail_after_write(*args):
+            merge_agents(*args)
+            raise OSError("injected failure after models write")
+        with mock.patch.object(installer, "merge_agents_to_models", side_effect=fail_after_write):
+            code, _ = self.run_main({"demo": module}, "--module", "demo")
+        self.assertEqual(code, 1)
+        self.assertEqual((self.root / "settings.json").read_bytes(), before)
+        self.assertFalse(self.models.exists())
+        self.assertFalse((self.root / "hooks/demo").exists())
+
+    def test_i2_reinstall_and_update_replace_old_hooks_preserving_foreign_commands(self):
+        foreign = self.foreign_hooks()
+        self.save(self.root / "settings.json", {"hooks": {"Stop": foreign}})
+        source = self.root / "hook-source"
+        source.mkdir()
+        module = {"operations": [{"type": "copy_dir", "source": "hook-source", "target": "hooks/demo"}]}
+        for index, extra in enumerate(([], [], ["--update"])):
+            hooks = {"hooks": {"Stop": [{"hooks": [{"command": f"echo version-{index}"}]}]}}
+            self.save(source / "hooks.json", hooks)
+            code, _ = self.run_main({"demo": module}, "--module", "demo", *extra)
+            self.assertEqual(code, 0)
+            actual = self.read_json(self.root / "settings.json")["hooks"]["Stop"]
+            self.assertEqual(actual[:3], foreign)
+            self.assertEqual(len(actual), 4)
+            self.assertEqual(actual[-1]["hooks"][0]["command"], f"echo version-{index}")
+
+    def test_i3_hash_matches_cli_canonical_defaults_and_protects_edits(self):
+        cfg = {"model": "original", "nested": {"z": 1, "a": ["value"]}}
+        # SHA256 of the exact canonical JSON produced by cli.js.
+        import hashlib
+        expected = hashlib.sha256(b'{"model":"original","nested":{"a":["value"],"z":1}}').hexdigest()[:12]
+        self.assertEqual(installer.agent_defaults_hash(cfg), expected)
+        installer.merge_agents_to_models("demo", {"agent": cfg}, self.ctx)
+        models = self.read_json(self.models)
+        self.assertEqual(models["agents"]["agent"]["__hash__"], expected)
+        models["agents"]["agent"]["model"] = "user edited"
+        self.save(self.models, models)
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            installer.merge_agents_to_models("demo", {"agent": {"model": "update"}}, self.ctx)
+        self.assertIn("user-edited agent: agent", output.getvalue())
+        self.assertEqual(self.read_json(self.models), models)
+        installer.unmerge_agents_from_models("demo", self.ctx)
+        self.assertEqual(self.read_json(self.models), models)
+
+    def test_i3_unmodified_agents_update_and_uninstall_foreign_agents_survive(self):
+        self.save(self.models, {"agents": {"foreign": {"model": "mine"}}})
+        for model in ("one", "two"):
+            installer.merge_agents_to_models("demo", {"agent": {"model": model}, "foreign": {"model": "bad"}}, self.ctx)
+            agent = self.read_json(self.models)["agents"]["agent"]
+            self.assertEqual(agent["model"], model)
+            self.assertEqual(agent["__hash__"], installer.agent_defaults_hash(agent))
+        installer.unmerge_agents_from_models("demo", self.ctx)
+        self.assertEqual(self.read_json(self.models)["agents"], {"foreign": {"model": "mine"}})
+
+    def test_i4_reinstall_retains_owned_merge_files_for_uninstall(self):
+        source = self.root / "merge/agents"
+        source.mkdir(parents=True)
+        (source / "first.md").write_text("first")
+        module = {"operations": [{"type": "merge_dir", "source": "merge"}]}
+        for name in ("first", "second"):
+            (source / f"{name}.md").write_text(name)
+            self.assertEqual(self.run_main({"demo": module}, "--module", "demo")[0], 0)
+        owned = self.read_json(self.ctx["status_file"])["modules"]["demo"]["merge_dir_files"]
+        self.assertEqual(set(owned), {"agents/first.md", "agents/second.md"})
+        self.assertEqual(self.run_main({"demo": module}, "--uninstall", "--module", "demo")[0], 0)
+        self.assertFalse((self.root / "agents/first.md").exists())
+        self.assertFalse((self.root / "agents/second.md").exists())
+
+    def test_i5_update_without_status_makes_no_changes(self):
+        agent = self.root / "agents/debug.md"
+        agent.parent.mkdir()
+        agent.write_bytes(b"user file")
+        module = {"operations": [{"type": "copy_file", "source": "missing", "target": "agents/debug.md"}]}
+        before = {p.relative_to(self.root): p.read_bytes() for p in self.root.rglob("*") if p.is_file()}
+        # Place config first so its creation isn't counted as an installer change.
+        self.save(self.root / "config.json", {"modules": {"essentials": module}})
+        before[Path("config.json")] = (self.root / "config.json").read_bytes()
+        code, output = self.run_main({"essentials": module}, "--update")
+        self.assertEqual(code, 0)
+        self.assertIn("--module", output)
+        self.assertEqual({p.relative_to(self.root): p.read_bytes() for p in self.root.rglob("*") if p.is_file()}, before)
+
+    def test_i5_update_uses_only_recorded_modules(self):
+        self.save(self.ctx["status_file"], {"modules": {"recorded": {"status": "success"}}})
+        (self.root / "agents").mkdir()
+        (self.root / "agents/debug.md").write_text("user")
+        modules = {"recorded": {"operations": []}, "essentials": {"operations": [
+            {"type": "copy_file", "source": "missing", "target": "agents/debug.md"}]}}
+        code, _ = self.run_main(modules, "--update")
+        self.assertEqual(code, 0)
+        self.assertEqual(set(self.read_json(self.ctx["status_file"])["modules"]), {"recorded"})
+        self.assertEqual((self.root / "agents/debug.md").read_text(), "user")
+
+    def test_i7_windows_resolves_working_python_and_preserves_foreign_hooks(self):
+        for successful, expected in ((1, "python"), (2, "py -3")):
+            with self.subTest(expected=expected), mock.patch.object(installer.sys, "platform", "win32"), \
+                    mock.patch.dict(os.environ, {"MYCLAUDE_PYTHON": ""}), \
+                    mock.patch.object(installer.subprocess, "run") as run:
+                run.side_effect = [subprocess.CompletedProcess([], 1)] * successful + [subprocess.CompletedProcess([], 0)]
+                foreign = self.foreign_hooks()
+                self.save(self.root / "settings.json", {"hooks": {"Stop": foreign}})
+                hooks = {"hooks": {"Stop": [{"hooks": [{"command": 'python3 "C:/hook.py"'}]}]}}
+                self.ctx.pop("python_command", None)
+                installer.merge_hooks_to_settings("demo", hooks, self.ctx)
+                actual = self.read_json(self.root / "settings.json")["hooks"]["Stop"]
+                self.assertEqual(actual[:3], foreign)
+                self.assertEqual(actual[-1]["hooks"][0]["command"], expected + ' "C:/hook.py"')
+                self.assertEqual([call.args[0] for call in run.call_args_list],
+                                 [["python3", "-c", "import sys"], ["python", "-c", "import sys"],
+                                  ["py", "-3", "-c", "import sys"]][:successful + 1])
+
+    def test_i8_unknown_module_reports_available_modules_without_traceback(self):
+        for flags in ([], ["--update"], ["--uninstall"]):
+            code, output = self.run_main({"demo": {}}, "--module", "nope", *flags)
+            self.assertEqual(code, 1)
+            self.assertIn("Unknown module: nope", output)
+            self.assertIn("Available Modules", output)
+            self.assertIn("demo", output)
+            self.assertNotIn("Traceback", output)
+
+
+    def test_i5_explicit_module_cannot_update_without_status(self):
+        code, output = self.run_main({"demo": {"operations": []}}, "--update", "--module", "demo")
+        self.assertEqual(code, 0)
+        self.assertIn("demo is not installed; run without --update to install it", output)
+        self.assertFalse(self.ctx["status_file"].exists())
+
+    def test_i1_update_rollback_never_persists_rolled_back_success(self):
+        for force in (False, True):
+            with self.subTest(force=force):
+                source = self.root / "update-source"
+                source.mkdir(exist_ok=True)
+                self.save(source / "hooks.json", self.hooks)
+                settings = self.root / "settings.json"
+                self.save(settings, {"hooks": {"Stop": self.foreign_hooks()}})
+                before = settings.read_bytes()
+                previous = {"modules": {name: {"status": "success", "version": "old"}
+                                         for name in ("first", "broken")}}
+                self.save(self.ctx["status_file"], previous)
+                modules = {"first": {"operations": [{"type": "copy_dir", "source": "update-source", "target": "hooks/first"}]},
+                           "broken": {"operations": [{"type": "invalid"}]}}
+                code, _ = self.run_main(modules, "--update", *(["--force"] if force else []))
+                self.assertEqual(code, 0 if force else 1)
+                self.assertEqual(settings.read_bytes(), before)
+                self.assertFalse((self.root / "hooks/first").exists())
+                self.assertEqual(self.read_json(self.ctx["status_file"])["modules"], previous["modules"])
+
+    def test_i2_replaces_legacy_untagged_hooks_only_inside_module_root(self):
+        root = (self.root / "skills/demo").as_posix()
+        foreign = self.foreign_hooks()
+        self.save(self.root / "settings.json", {"hooks": {"Stop": foreign + [
+            {"hooks": [{"command": f'python3 "{root}/old.py"'}]}]}})
+        installer.merge_hooks_to_settings("demo", self.hooks, self.ctx, plugin_roots=[root])
+        actual = self.read_json(self.root / "settings.json")["hooks"]["Stop"]
+        self.assertEqual(actual[:3], foreign)
+        self.assertEqual(len(actual), 4)
+        self.assertEqual(actual[-1]["hooks"][0]["command"], "echo ok")
+
+
 if __name__ == "__main__":
     unittest.main()
+
+
+class FollowupRequirementsTests(unittest.TestCase):
+    setUp = InstallerJsonTests.setUp
+    read_json = InstallerJsonTests.read_json
+    save = InstallerRequirementsTests.save
+    run_main = InstallerRequirementsTests.run_main
+
+    def test_legacy_hint_and_command(self):
+        modules = {name: {"operations": [{"type": "copy_dir", "target": f"skills/{name}"}]}
+                   for name in ("do", "harness")}
+        for name in modules:
+            (self.root / "skills" / name).mkdir(parents=True)
+        code, output = self.run_main(modules, "--update")
+        self.assertEqual(code, 0)
+        self.assertIn("No installation status found. Detected: do, harness. Run: python install.py --module do,harness --update", output)
+        self.assertFalse(self.ctx["status_file"].exists())
+
+    def test_update_status_and_explicit_scope(self):
+        entries = {"legacy": {}, "good": {"status": "installed"}, "ok": {"status": "success"},
+                   "bad": {"status": "failed"}, "undone": {"status": "rolled_back"}}
+        modules = {name: {"operations": []} for name in (*entries, "absent")}
+        for explicit in (False, True):
+            with self.subTest(explicit=explicit):
+                self.save(self.ctx["status_file"], {"modules": entries})
+                with mock.patch.object(installer, "execute_module", side_effect=lambda name, cfg, ctx:
+                                       {"module": name, "status": "success"}) as execute:
+                    code, output = self.run_main(modules, "--update", "--force",
+                        *(["--module", "legacy,bad,undone,absent"] if explicit else []))
+                self.assertEqual(code, 0)
+                self.assertEqual([c.args[0] for c in execute.call_args_list],
+                                 ["legacy"] if explicit else ["legacy", "good", "ok"])
+                for name in (["bad", "undone", "absent"] if explicit else ["bad", "undone"]):
+                    self.assertIn(f"{name} is not installed; run without --update to install it", output)
+
+    def test_python_resolution_cached_across_hook_merges(self):
+        hooks = {"hooks": {"Stop": [{"hooks": [{"command": f"python3 hook{i}.py"} for i in range(4)]}],
+                           "SessionStart": [{"hooks": [{"command": "python3 start.py"}]}]}}
+        with mock.patch.object(installer, "resolve_python_command", return_value="py -3") as resolve:
+            installer.merge_hooks_to_settings("demo", hooks, self.ctx)
+            installer.merge_hooks_to_settings("other", hooks, self.ctx)
+        resolve.assert_called_once_with()
+        actual = self.read_json(self.root / "settings.json")["hooks"]
+        for entries in actual.values():
+            for entry in entries:
+                for hook in entry["hooks"]:
+                    self.assertTrue(hook["command"].startswith("py -3 "))

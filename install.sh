@@ -14,6 +14,9 @@ fi
 # Detect platform
 OS=$(uname -s | tr '[:upper:]' '[:lower:]')
 ARCH=$(uname -m)
+case "$OS" in
+    mingw*|msys*|cygwin*) OS="windows" ;;
+esac
 
 # Normalize architecture names
 case "$ARCH" in
@@ -26,6 +29,7 @@ esac
 REPO="miraserver/myclaude"
 VERSION="${CODEAGENT_WRAPPER_VERSION:-latest}"
 BINARY_NAME="codeagent-wrapper-${OS}-${ARCH}"
+if [ "$OS" = "windows" ]; then BINARY_NAME="${BINARY_NAME}.exe"; fi
 if [ "$VERSION" = "latest" ]; then
     URL="https://github.com/${REPO}/releases/latest/download/${BINARY_NAME}"
 else
@@ -33,7 +37,9 @@ else
 fi
 
 echo "Downloading codeagent-wrapper from ${URL}..."
-if ! curl -fsSL "$URL" -o /tmp/codeagent-wrapper; then
+DOWNLOAD_FILE=$(mktemp)
+trap 'rm -f "$DOWNLOAD_FILE"' EXIT
+if ! curl -fsSL "$URL" -o "$DOWNLOAD_FILE"; then
     echo "ERROR: failed to download binary" >&2
     exit 1
 fi
@@ -42,11 +48,13 @@ INSTALL_DIR="${INSTALL_DIR:-$HOME/.claude}"
 BIN_DIR="${INSTALL_DIR}/bin"
 mkdir -p "$BIN_DIR"
 
-mv /tmp/codeagent-wrapper "${BIN_DIR}/codeagent-wrapper"
-chmod +x "${BIN_DIR}/codeagent-wrapper"
+WRAPPER_PATH="${BIN_DIR}/codeagent-wrapper"
+if [ "$OS" = "windows" ]; then WRAPPER_PATH="${WRAPPER_PATH}.exe"; fi
+mv "$DOWNLOAD_FILE" "$WRAPPER_PATH"
+chmod +x "$WRAPPER_PATH"
 
-if "${BIN_DIR}/codeagent-wrapper" --version >/dev/null 2>&1; then
-    echo "codeagent-wrapper installed successfully to ${BIN_DIR}/codeagent-wrapper"
+if "$WRAPPER_PATH" --version >/dev/null 2>&1; then
+    echo "codeagent-wrapper installed successfully to ${WRAPPER_PATH}"
 else
     echo "ERROR: installation verification failed" >&2
     exit 1

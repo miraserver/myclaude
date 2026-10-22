@@ -182,5 +182,37 @@ class UninstallerWrapperTests(unittest.TestCase):
                         self.assertTrue(wrapper.exists())
 
 
+class SharedAgentUninstallTests(unittest.TestCase):
+    def test_i6_shared_agents_restore_only_from_modules_remaining_installed(self):
+        spec = importlib.util.spec_from_file_location("shared_agent_installer", ROOT / "install.py")
+        installer = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(installer)
+        for selection in ("do,omo", "omo,do", "do"):
+            with self.subTest(selection=selection), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                config = {"modules": {name: {"operations": [], "agents": {
+                    "develop": {"backend": "codex", "model": name}}} for name in ("do", "omo")}}
+                config_path = root / "config.json"
+                installer._save_json(config_path, config)
+                status = root / "installed_modules.json"
+                installer._save_json(status, {"modules": {name: {"status": "success"} for name in ("do", "omo")}})
+                models_path = root / ".codeagent/models.json"
+                agent = {"backend": "codex", "model": "do", "__module__": "do"}
+                agent["__hash__"] = installer.agent_defaults_hash(agent)
+                installer._save_json(models_path, {"agents": {"develop": agent}})
+                with mock.patch.dict("os.environ", {"HOME": str(root), "USERPROFILE": str(root)}), \
+                        mock.patch.object(installer.Path, "home", return_value=root), \
+                        mock.patch.object(installer, "load_config", return_value=config), \
+                        contextlib.redirect_stdout(io.StringIO()):
+                    self.assertEqual(installer.main(["--config", str(config_path), "--install-dir", str(root),
+                                                     "--uninstall", "--module", selection]), 0)
+                agents = json.loads(models_path.read_text())["agents"]
+                if selection == "do":
+                    self.assertEqual(agents["develop"]["__module__"], "omo")
+                    self.assertEqual(agents["develop"]["__hash__"], installer.agent_defaults_hash(agents["develop"]))
+                else:
+                    self.assertEqual(agents, {})
+
+
 if __name__ == "__main__":
     unittest.main()

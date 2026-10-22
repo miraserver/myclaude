@@ -9,6 +9,7 @@ const { test } = require("node:test");
 const { spawnSync } = require("node:child_process");
 const vm = require("node:vm");
 const {
+  installDefaultConfigs,
   applyModule,
   upsertModuleStatus,
   loadInstalledStatus,
@@ -43,13 +44,42 @@ for (const [platform, cmd, script] of [
     const command = installScriptCommand(repoRoot, platform);
     assert.deepEqual(command, {
       cmd,
-      args: platform === "win32" ? ["/c", path.join(repoRoot, script)] : [path.join(repoRoot, script)],
+      args: platform === "win32"
+        ? ["/d", "/s", "/c", `""${path.join(repoRoot, script)}""`]
+        : [path.join(repoRoot, script)],
+      ...(platform === "win32" ? { windowsVerbatimArguments: true } : {}),
     });
-    const scriptPath = command.args[command.args.length - 1];
+    const scriptPath = command.args[command.args.length - 1].replace(/^"+|"+$/g, "");
     assert.equal(path.isAbsolute(scriptPath), true);
     assert.equal(path.dirname(scriptPath), repoRoot);
   });
 }
+
+test("install.sh maps MSYS family platforms to Windows release assets without downloading", (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "myclaude-uname-"));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const uname = path.join(root, "uname");
+  const curl = path.join(root, "curl");
+  const urlFile = path.join(root, "url");
+  fs.writeFileSync(uname, "#!/bin/sh\ncase \"$1\" in -s) echo MINGW64_NT-10.0;; -m) echo x86_64;; esac\n");
+  fs.writeFileSync(curl, `#!/bin/sh\nprintf '%s' "$2" > "${urlFile.replace(/\\/g, "/")}"\nprintf '#!/bin/sh\\nexit 0\\n' > "$4"\n`);
+  fs.chmodSync(uname, 0o755);
+  fs.chmodSync(curl, 0o755);
+  const result = spawnSync("bash", [path.resolve(__dirname, "../install.sh")], {
+    encoding: "utf8", env: { ...process.env, PATH: `${root}${path.delimiter}${process.env.PATH}`,
+      HOME: root, USERPROFILE: root, SHELL: "/bin/bash", INSTALL_DIR: path.join(root, "install"), SKIP_WARNING: "1" }, timeout: 10000,
+  });
+  assert.equal(result.status, 0, result.stderr);
+  assert.ok(fs.existsSync(path.join(root, "install", "bin", "codeagent-wrapper.exe")));
+  assert.equal(fs.existsSync(path.join(root, "install", "bin", "codeagent-wrapper")), false);
+  assert.equal(fs.readFileSync(urlFile, "utf8"),
+    "https://github.com/miraserver/myclaude/releases/latest/download/codeagent-wrapper-windows-amd64.exe");
+});
+
+test("install.sh passes shell syntax validation", () => {
+  const result = spawnSync("bash", ["-n", path.resolve(__dirname, "../install.sh")], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+});
 
 test("wrapperBinPath uses the platform-specific wrapper location", () => {
   assert.equal(wrapperBinPath("C:\\install", "win32", "C:\\Users\\tester"),
@@ -157,6 +187,31 @@ test("offline wrapper install skips the installer process", async (t) => {
   assert.equal(output, "Offline mode: skipping codeagent-wrapper download.\n");
 });
 
+test("wrapper installer sets SKIP_WARNING and reports spawn errors", async () => {
+  let spawnOptions;
+  let output = "";
+  const sandbox = {
+    module: { exports: {} },
+    require: (name) => name === "child_process" ? {
+      spawn: (_cmd, _args, options) => {
+        spawnOptions = options;
+        const { EventEmitter } = require("node:events");
+        const child = new EventEmitter();
+        process.nextTick(() => child.emit("error", new Error("ENOENT")));
+        return child;
+      }, spawnSync,
+    } : require(name),
+    process: { platform: "win32", env: {}, stdout: { write: (s) => { output += s; } } },
+  };
+  vm.runInNewContext(fs.readFileSync(cliPath, "utf8") +
+    "\nmodule.exports.testRunInstallSh = runInstallSh;", sandbox);
+  await assert.rejects(sandbox.module.exports.testRunInstallSh("C:\\repo & dir", "C:\\install", null),
+    /Unable to start install script \(cmd\.exe\): ENOENT/);
+  assert.equal(spawnOptions.env.SKIP_WARNING, "1");
+  assert.equal(spawnOptions.windowsVerbatimArguments, true);
+  assert.equal(output, "");
+});
+
 test("offline install selection continues without spawning the wrapper installer", async (t) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "myclaude-offline-install-"));
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
@@ -192,6 +247,44 @@ test("offline CLI update skips wrapper process without --skip-wrapper", (t) => {
   assert.equal(fs.existsSync(path.join(f.installDir, "bin", "codeagent-wrapper")), false);
 });
 
+test("CLI update with no status file does not adopt existing module paths", (t) => {
+  const f = fixture(t);
+  fs.mkdirSync(path.join(f.installDir, "hooks"), { recursive: true });
+  fs.writeFileSync(path.join(f.installDir, "hooks", "existing.py"), "user file");
+  const result = spawnSync(process.execPath, [cliPath, "--update", "--offline", "--skip-wrapper",
+    "--install-dir", f.installDir], { encoding: "utf8", timeout: 10000, env: {
+      ...process.env, HOME: f.installDir, USERPROFILE: f.installDir,
+    } });
+  assert.equal(result.status, 0, result.stderr);
+  assert.match(result.stdout, /No installation status found/);
+  assert.equal(fs.existsSync(path.join(f.installDir, "installed_modules.json")), false);
+  assert.equal(fs.readFileSync(path.join(f.installDir, "hooks", "existing.py"), "utf8"), "user file");
+});
+
+test("matching skill selection installs its configured module and records status", async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "myclaude-skill-module-"));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const repo = path.join(root, "repo");
+  const installDir = path.join(root, "install");
+  fs.mkdirSync(path.join(repo, "skills", "do"), { recursive: true });
+  fs.mkdirSync(path.join(repo, "source"), { recursive: true });
+  fs.writeFileSync(path.join(repo, "skills", "do", "SKILL.md"), "skill only");
+  fs.writeFileSync(path.join(repo, "source", "wrapper.txt"), "module payload");
+  const sandbox = {
+    module: { exports: {} }, __dirname: path.join(repo, "bin"),
+    require: (name) => name === "child_process" ? { spawn: () => { throw new Error("unexpected spawn"); }, spawnSync } : require(name),
+    process: { platform: process.platform, env: { ...process.env }, stdout: { write() {} } },
+  };
+  fs.mkdirSync(path.join(repo, "bin"));
+  vm.runInNewContext(fs.readFileSync(cliPath, "utf8") + "\nmodule.exports.testInstallSelected = installSelected;", sandbox);
+  await sandbox.module.exports.testInstallSelected([{ kind: "skill", skillName: "do" }], null,
+    { modules: { do: { operations: [{ type: "copy_file", source: "source/wrapper.txt", target: "bin/wrapper.txt" }] } } },
+    installDir, false, false, true);
+  assert.equal(fs.readFileSync(path.join(installDir, "bin", "wrapper.txt"), "utf8"), "module payload");
+  assert.equal(fs.existsSync(path.join(installDir, "skills", "do")), false);
+  assert.ok(fs.existsSync(path.join(installDir, "installed_modules.json")));
+});
+
 test("install.bat builds latest and tagged release URLs", () => {
   const source = fs.readFileSync(path.resolve(__dirname, "../install.bat"), "utf8");
   assert.doesNotMatch(source, /releases\/%VERSION%\/download/);
@@ -202,15 +295,17 @@ test("install.bat builds latest and tagged release URLs", () => {
 test("Windows installer runs with current-directory executable lookup disabled", {
   skip: process.platform !== "win32",
 }, (t) => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "myclaude-install-"));
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "myclaude a b&c-"));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
-  fs.writeFileSync(path.join(dir, "install.bat"), "@echo off\r\nexit /b 0\r\n");
-  const { cmd, args } = installScriptCommand(dir);
+  fs.writeFileSync(path.join(dir, "install.bat"), '@echo off\r\necho marker> "%~dp0marker.txt"\r\nexit /b 0\r\n');
+  const { cmd, args, windowsVerbatimArguments } = installScriptCommand(dir);
   const result = spawnSync(cmd, args, {
     cwd: dir,
-    env: { ...process.env, NoDefaultCurrentDirectoryInExePath: "1" },
+    env: { ...process.env, HOME: dir, USERPROFILE: dir, NoDefaultCurrentDirectoryInExePath: "1" },
+    windowsVerbatimArguments,
   });
   assert.equal(result.status, 0, result.error?.message || result.stderr?.toString());
+  assert.equal(fs.readFileSync(path.join(dir, "marker.txt"), "utf8").trim(), "marker");
 });
 
 function fixture(t, settings = {}) {
@@ -919,7 +1014,7 @@ test("identical unowned merge files become owned on update", (t) => {
   assert.ok(loadInstalledStatus(f.installDir).modules.essentials.merge_dir_files.includes("commands/review.md"));
 });
 
-test("legacy detection finds differing merge files but update preserves user ownership", async (t) => {
+test("legacy detection remains available but update requires recorded status", async (t) => {
   const f = fixture(t);
   const repoRoot = path.resolve(__dirname, "..");
   const config = require("../config.json");
@@ -931,9 +1026,10 @@ test("legacy detection finds differing merge files but update preserves user own
   const detected = await detectInstalledModuleNames(config, repoRoot, f.installDir);
   assert.equal(detected.includes("claudekit"), false);
   assert.equal(detected.includes("essentials"), true);
-  runUpdate(f.installDir);
+  const result = runUpdate(f.installDir);
+  assert.match(result.stdout, /No installation status found/);
   assert.equal(fs.readFileSync(review, "utf8"), "personal command");
-  assert.equal(loadInstalledStatus(f.installDir).modules.essentials.merge_dir_files.includes("commands/review.md"), false);
+  assert.equal(fs.existsSync(path.join(f.installDir, "installed_modules.json")), false);
 });
 
 test("agent prompt files match their module install targets and existing sources", () => {
@@ -1085,3 +1181,99 @@ for (const failure of ["merge_hooks", "merge_agents"]) {
     assert.deepEqual(status.operations.at(-1), { type: failure, status: "failed", error: "injected merge write failure" });
   });
 }
+
+for (const scenario of ["fresh", "matching CLAUDE.md", "user CLAUDE.md", "existing skill"]) {
+  test(`default configs install codeagent dependency safely: ${scenario}`, async (t) => {
+    const f = fixture(t);
+    modelsFixture(t);
+    const repoRoot = path.resolve(__dirname, "..");
+    const config = require("../config.json");
+    const claude = path.join(f.installDir, "CLAUDE.md");
+    const skill = path.join(f.installDir, "skills/codeagent/SKILL.md");
+    if (scenario === "matching CLAUDE.md") fs.copyFileSync(path.join(repoRoot, "memorys/CLAUDE.md"), claude);
+    if (scenario === "user CLAUDE.md") fs.writeFileSync(claude, "user instructions\n");
+    if (scenario === "existing skill") {
+      fs.mkdirSync(path.dirname(skill), { recursive: true });
+      fs.writeFileSync(skill, "user skill\n");
+    }
+    upsertModuleStatus(f.installDir, await applyModule("harness", config, repoRoot, f.installDir, false));
+    await installDefaultConfigs(f.installDir, repoRoot);
+    if (scenario === "user CLAUDE.md") {
+      assert.equal(fs.readFileSync(claude, "utf8"), "user instructions\n");
+      assert.equal(fs.existsSync(skill), false);
+    } else {
+      assert.deepEqual(fs.readFileSync(claude), fs.readFileSync(path.join(repoRoot, "memorys/CLAUDE.md")));
+      assert.deepEqual(fs.readFileSync(skill), scenario === "existing skill"
+        ? Buffer.from("user skill\n") : fs.readFileSync(path.join(repoRoot, "skills/codeagent/SKILL.md")));
+    }
+    await uninstallModule("harness", config, repoRoot, f.installDir, false);
+    if (scenario !== "user CLAUDE.md") assert.equal(fs.existsSync(skill), true);
+  });
+}
+
+test("essentials reinstall without force then uninstall removes all owned files and keeps foreign files", async (t) => {
+  const f = fixture(t);
+  modelsFixture(t);
+  const repoRoot = path.resolve(__dirname, "..");
+  const config = require("../config.json");
+  const foreign = path.join(f.installDir, "commands/review.md");
+  fs.mkdirSync(path.dirname(foreign), { recursive: true });
+  fs.writeFileSync(foreign, "foreign command\n");
+  const install = () => applyModule("essentials", config, repoRoot, f.installDir, false);
+  const first = await install();
+  upsertModuleStatus(f.installDir, first);
+  assert.ok(first.merge_dir_files.length > 0);
+  const second = await install();
+  upsertModuleStatus(f.installDir, second);
+  assert.deepEqual(new Set(loadInstalledStatus(f.installDir).modules.essentials.merge_dir_files), new Set(first.merge_dir_files));
+  await uninstallModule("essentials", config, repoRoot, f.installDir, false);
+  for (const rel of first.merge_dir_files) assert.equal(fs.existsSync(path.join(f.installDir, rel)), false, rel);
+  assert.equal(fs.readFileSync(foreign, "utf8"), "foreign command\n");
+});
+
+for (const explicit of [false, true]) {
+  test(`update skips unsuccessful entries and respects explicit scope: ${explicit}`, (t) => {
+    const f = fixture(t);
+    const entries = { do: {}, harness: { status: "installed" }, essentials: { status: "success" },
+      omo: { status: "failed" }, claudekit: { status: "rolled_back" } };
+    for (const [module, entry] of Object.entries(entries)) upsertModuleStatus(f.installDir, { module, ...entry });
+    const before = fs.readFileSync(path.join(f.installDir, "installed_modules.json"));
+    const result = runUpdate(f.installDir, "--dry-run", ...(explicit ? ["--module", "do,omo,sparv,claudekit"] : []));
+    assert.match(result.stdout, /module:do\n/);
+    assert.match(result.stdout, /omo is not installed; run without --update to install it/);
+    assert.match(result.stdout, /claudekit is not installed; run without --update to install it/);
+    if (explicit) {
+      assert.match(result.stdout, /sparv is not installed; run without --update to install it/);
+      assert.doesNotMatch(result.stdout, /module:(harness|essentials)\n/);
+    } else {
+      assert.match(result.stdout, /module:harness\n/);
+      assert.match(result.stdout, /module:essentials\n/);
+    }
+    assert.deepEqual(fs.readFileSync(path.join(f.installDir, "installed_modules.json")), before);
+  });
+}
+
+test("legacy update prints detected modules and exact recovery command without installing", async (t) => {
+  const f = fixture(t);
+  for (const name of ["do", "harness"]) fs.mkdirSync(path.join(f.installDir, "skills", name), { recursive: true });
+  const result = runUpdate(f.installDir);
+  const detected = await detectInstalledModuleNames(require("../config.json"), path.resolve(__dirname, ".."), f.installDir);
+  assert.ok(detected.includes("do") && detected.includes("harness"));
+  assert.ok(result.stdout.includes(`No installation status found. Detected: ${detected.join(", ")}. Run: npx github:miraserver/myclaude --module ${detected.join(",")} --update`));
+  assert.equal(fs.existsSync(path.join(f.installDir, "installed_modules.json")), false);
+  const explicit = runUpdate(f.installDir, "--module", "do", "--force");
+  assert.match(explicit.stdout, /do is not installed; run without --update to install it/);
+  assert.equal(fs.existsSync(path.join(f.installDir, "installed_modules.json")), false);
+});
+
+test("explicit update never installs absent or failed modules, even with force", (t) => {
+  const f = fixture(t);
+  upsertModuleStatus(f.installDir, { module: "do", status: "failed" });
+  const before = fs.readFileSync(path.join(f.installDir, "installed_modules.json"));
+  const result = runUpdate(f.installDir, "--module", "do,harness", "--force");
+  for (const name of ["do", "harness"]) {
+    assert.ok(result.stdout.includes(`${name} is not installed; run without --update to install it`));
+    assert.equal(fs.existsSync(path.join(f.installDir, "skills", name)), false);
+  }
+  assert.deepEqual(fs.readFileSync(path.join(f.installDir, "installed_modules.json")), before);
+});

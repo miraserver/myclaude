@@ -8,6 +8,10 @@ and record what happened. Designed to be small, readable, and predictable.
 from __future__ import annotations
 
 import argparse
+import copy
+import hashlib
+import re
+import tempfile
 import json
 import os
 import shutil
@@ -154,8 +158,8 @@ def find_module_hooks(module_name: str, cfg: Dict[str, Any], ctx: Dict[str, Any]
             target_dir = ctx["install_dir"] / op["target"]
             source_dir = ctx["config_dir"] / op["source"]
 
-            # Check both target and source directories
-            for base_dir, plugin_root in [(target_dir, target_dir.as_posix()), (source_dir, target_dir.as_posix())]:
+            # Prefer current source hooks over stale installed hooks on reinstall.
+            for base_dir, plugin_root in [(source_dir if source_dir.exists() else target_dir, target_dir.as_posix())]:
                 # First check {dir}/hooks/hooks.json (for skills)
                 hooks_file = base_dir / "hooks" / "hooks.json"
                 if hooks_file.exists() and str(hooks_file) not in seen_paths:
@@ -193,38 +197,56 @@ def _replace_hook_variables(obj: Any, plugin_root: str) -> Any:
     return obj
 
 
-def merge_hooks_to_settings(module_name: str, hooks_config: Dict[str, Any], ctx: Dict[str, Any], plugin_root: str = "") -> None:
-    """Merge module hooks into settings.json."""
+def resolve_python_command() -> str:
+    if os.environ.get("MYCLAUDE_PYTHON"):
+        return os.environ["MYCLAUDE_PYTHON"]
+    if sys.platform == "win32":
+        for command in (["python3"], ["python"], ["py", "-3"]):
+            try:
+                result = subprocess.run(command + ["-c", "import sys"],
+                                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                        timeout=10, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+                if result.returncode == 0:
+                    return " ".join(command)
+            except (OSError, subprocess.TimeoutExpired):
+                pass
+        print("Warning: no working Python interpreter found; using python3.", file=sys.stderr)
+    return "python3"
+
+
+def _entry_points_into(entry: Dict[str, Any], plugin_root: str) -> bool:
+    def normalize(value):
+        return value.replace("\\", "/").replace('"', "").replace("'", "").lower()
+    root = normalize(plugin_root).rstrip("/") + "/"
+    return bool(plugin_root) and any(root in normalize(h.get("command", ""))
+                                     for h in entry.get("hooks", []))
+
+
+def merge_hooks_to_settings(module_name: str, hooks_config: Dict[str, Any], ctx: Dict[str, Any], plugin_root: str = "", plugin_roots: Optional[List[str]] = None) -> None:
+    """Replace owned hooks while preserving foreign hook values verbatim."""
     settings = load_settings(ctx)
-    settings.setdefault("hooks", {})
-
-    module_hooks = hooks_config.get("hooks", {})
-    marker = _create_hook_marker(module_name)
-
-    # Replace ${CLAUDE_PLUGIN_ROOT} with actual path
-    if plugin_root:
-        module_hooks = _replace_hook_variables(module_hooks, plugin_root)
-
-    for hook_type, hook_entries in module_hooks.items():
-        settings["hooks"].setdefault(hook_type, [])
-
-        for entry in hook_entries:
-            # Add marker to identify this hook's source module
-            entry_copy = dict(entry)
-            entry_copy["__module__"] = module_name
-
-            # Check if already exists (avoid duplicates)
-            exists = False
-            for existing in settings["hooks"][hook_type]:
-                if existing.get("__module__") == module_name:
-                    # Same module, check if same hook
-                    if _hooks_equal(existing, entry_copy):
-                        exists = True
-                        break
-
-            if not exists:
-                settings["hooks"][hook_type].append(entry_copy)
-
+    hooks = settings.setdefault("hooks", {})
+    roots = plugin_roots if plugin_roots is not None else [plugin_root]
+    for hook_type, entries in list(hooks.items()):
+        hooks[hook_type] = [entry for entry in entries if not (
+            entry.get("__module__") == module_name or
+            ("__module__" not in entry and any(_entry_points_into(entry, root) for root in roots)))]
+    module_hooks = _replace_hook_variables(hooks_config.get("hooks", {}), plugin_root)
+    for hook_type, entries in module_hooks.items():
+        target = hooks.setdefault(hook_type, [])
+        for entry in entries:
+            entry = copy.deepcopy(entry)
+            entry["__module__"] = module_name
+            for hook in entry.get("hooks", []):
+                command = hook.get("command", "")
+                if re.match(r"^python3(?=\s)", command):
+                    if "python_command" not in ctx:
+                        ctx["python_command"] = resolve_python_command()
+                    hook["command"] = re.sub(r"^python3(?=\s)", lambda _: ctx["python_command"], command)
+            if entry not in target:
+                target.append(entry)
+    settings["hooks"] = {key: entries for key, entries in hooks.items() if entries}
+    _snapshot_path(ctx["install_dir"] / SETTINGS_FILE, ctx)
     save_settings(ctx, settings)
     write_log({"level": "INFO", "message": f"Merged hooks for module: {module_name}"}, ctx)
 
@@ -255,9 +277,20 @@ def unmerge_hooks_from_settings(module_name: str, ctx: Dict[str, Any]) -> None:
         write_log({"level": "INFO", "message": f"Removed hooks for module: {module_name}"}, ctx)
 
 
+def agent_defaults_hash(cfg: Dict[str, Any]) -> str:
+    defaults = {k: v for k, v in cfg.items() if k not in ("__module__", "__hash__")}
+    canonical = json.dumps(defaults, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:12]
+
+
+def _agent_modified(cfg: Dict[str, Any]) -> bool:
+    return "__hash__" in cfg and agent_defaults_hash(cfg) != cfg["__hash__"]
+
+
 def merge_agents_to_models(module_name: str, agents: Dict[str, Any], ctx: Dict[str, Any]) -> None:
     """Merge module agent configs into ~/.codeagent/models.json."""
     models_path = Path.home() / ".codeagent" / "models.json"
+    _snapshot_path(models_path, ctx)
     models_path.parent.mkdir(parents=True, exist_ok=True)
 
     if models_path.exists():
@@ -280,9 +313,13 @@ def merge_agents_to_models(module_name: str, agents: Dict[str, Any], ctx: Dict[s
     for agent_name, agent_cfg in agents.items():
         entry = dict(agent_cfg)
         entry["__module__"] = module_name
+        entry["__hash__"] = agent_defaults_hash(agent_cfg)
 
-        existing = models["agents"].get(agent_name, {})
-        if not existing or existing.get("__module__"):
+        existing = models["agents"].get(agent_name)
+        if isinstance(existing, dict) and _agent_modified(existing):
+            print(f"Keeping user-edited agent: {agent_name}")
+            continue
+        if not isinstance(existing, dict) or "__module__" in existing:
             models["agents"][agent_name] = entry
 
     with models_path.open("w", encoding="utf-8") as fh:
@@ -313,10 +350,14 @@ def unmerge_agents_from_models(module_name: str, ctx: Dict[str, Any]) -> None:
     models = _load_json(models_path)
 
     agents = models.get("agents", {})
+    for name, cfg in agents.items():
+        if isinstance(cfg, dict) and cfg.get("__module__") == module_name and _agent_modified(cfg):
+            print(f"Keeping user-edited agent: {name}")
     to_remove = [
         name
         for name, cfg in agents.items()
         if isinstance(cfg, dict) and cfg.get("__module__") == module_name
+        and not _agent_modified(cfg)
     ]
 
     if not to_remove:
@@ -331,7 +372,7 @@ def unmerge_agents_from_models(module_name: str, ctx: Dict[str, Any]) -> None:
         del agents[name]
         # Check if another installed module also declares this agent
         for other_mod, other_status in installed.items():
-            if other_mod == module_name:
+            if other_mod == module_name or other_mod in ctx.get("uninstalling_modules", set()):
                 continue
             if other_status.get("status") != "success":
                 continue
@@ -340,6 +381,7 @@ def unmerge_agents_from_models(module_name: str, ctx: Dict[str, Any]) -> None:
             if name in other_agents:
                 restored = dict(other_agents[name])
                 restored["__module__"] = other_mod
+                restored["__hash__"] = agent_defaults_hash(restored)
                 agents[name] = restored
                 break
 
@@ -554,7 +596,7 @@ def select_modules(config: Dict[str, Any], module_arg: Optional[str]) -> Dict[st
         if not name:
             continue
         if name not in modules:
-            raise ValueError(f"Module '{name}' not found")
+            raise ValueError(f"Unknown module: {name}")
         selected[name] = modules[name]
     return selected
 
@@ -827,6 +869,8 @@ def interactive_manage(config: Dict[str, Any], ctx: Dict[str, Any]) -> int:
                         print(f"  ✓ {name} installed")
                     except Exception as exc:
                         print(f"  ✗ {name} failed: {exc}")
+                        rollback(ctx)
+                        break
                 # Update status
                 current_status = load_installed_status(ctx)
                 for r in results:
@@ -836,6 +880,7 @@ def interactive_manage(config: Dict[str, Any], ctx: Dict[str, Any]) -> int:
                 current_status["updated_at"] = datetime.now().isoformat()
                 with Path(ctx["status_file"]).open("w", encoding="utf-8") as fh:
                     json.dump(current_status, fh, indent=2, ensure_ascii=False)
+                _clear_transaction(ctx)
 
         elif cmd == "u":
             # Uninstall
@@ -851,6 +896,7 @@ def interactive_manage(config: Dict[str, Any], ctx: Dict[str, Any]) -> int:
                 if confirm != "y":
                     print("Cancelled.")
                     continue
+                ctx["uninstalling_modules"] = set(to_uninstall)
                 for name, cfg in to_uninstall.items():
                     try:
                         uninstall_module(name, cfg, ctx)
@@ -912,6 +958,11 @@ def execute_module(name: str, cfg: Dict[str, Any], ctx: Dict[str, Any]) -> Dict[
         "installed_at": datetime.now().isoformat(),
     }
 
+    ctx.setdefault("transaction_results", []).append(result)
+    previous = load_installed_status(ctx).get("modules", {}).get(name, {})
+    result["merge_dir_files"] = [rel for rel in previous.get("merge_dir_files", [])
+                                 if (ctx["install_dir"] / rel).is_file()]
+
     if name in WRAPPER_REQUIRED_MODULES:
         try:
             ensure_wrapper_installed(ctx)
@@ -940,7 +991,7 @@ def execute_module(name: str, cfg: Dict[str, Any], ctx: Dict[str, Any]) -> Dict[
             elif op_type == "merge_dir":
                 merged = op_merge_dir(op, ctx)
                 if merged:
-                    result.setdefault("merge_dir_files", []).extend(merged)
+                    result["merge_dir_files"] = list(dict.fromkeys(result["merge_dir_files"] + merged))
             elif op_type == "merge_json":
                 op_merge_json(op, ctx)
             elif op_type == "run_command":
@@ -966,14 +1017,13 @@ def execute_module(name: str, cfg: Dict[str, Any], ctx: Dict[str, Any]) -> Dict[
     # Handle hooks: find and merge module hooks into settings.json
     hooks_results = find_module_hooks(name, cfg, ctx)
     if hooks_results:
+        combined = {"hooks": {}}
         for hooks_config, plugin_root in hooks_results:
-            try:
-                merge_hooks_to_settings(name, hooks_config, ctx, plugin_root)
-                result["operations"].append({"type": "merge_hooks", "status": "success"})
-                result["has_hooks"] = True
-            except Exception as exc:
-                write_log({"level": "WARNING", "message": f"Failed to merge hooks for {name}: {exc}"}, ctx)
-                result["operations"].append({"type": "merge_hooks", "status": "failed", "error": str(exc)})
+            for event, entries in _replace_hook_variables(hooks_config.get("hooks", {}), plugin_root).items():
+                combined["hooks"].setdefault(event, []).extend(entries)
+        merge_hooks_to_settings(name, combined, ctx, plugin_roots=[root for _, root in hooks_results])
+        result["operations"].append({"type": "merge_hooks", "status": "success"})
+        result["has_hooks"] = True
 
     # Handle agents: merge module agent configs into ~/.codeagent/models.json
     module_agents = cfg.get("agents", {})
@@ -985,6 +1035,7 @@ def execute_module(name: str, cfg: Dict[str, Any], ctx: Dict[str, Any]) -> Dict[
         except Exception as exc:
             write_log({"level": "WARNING", "message": f"Failed to merge agents for {name}: {exc}"}, ctx)
             result["operations"].append({"type": "merge_agents", "status": "failed", "error": str(exc)})
+            raise
 
     return result
 
@@ -995,6 +1046,34 @@ def _source_path(op: Dict[str, Any], ctx: Dict[str, Any]) -> Path:
 
 def _target_path(op: Dict[str, Any], ctx: Dict[str, Any]) -> Path:
     return (ctx["install_dir"] / op["target"]).expanduser().resolve()
+
+
+def _clear_transaction(ctx: Dict[str, Any]) -> None:
+    ctx.pop("snapshots", None)
+    ctx.pop("transaction_results", None)
+    ctx["applied_paths"] = []
+    if "snapshot_dir" in ctx:
+        ctx.pop("snapshot_dir").cleanup()
+
+
+def _snapshot_path(path: Path, ctx: Dict[str, Any]) -> None:
+    """Keep the pre-run version, including overwritten files during --force."""
+    path = Path(path).resolve()
+    snapshots = ctx.setdefault("snapshots", {})
+    if path in snapshots:
+        return
+    if "snapshot_dir" not in ctx:
+        ctx["snapshot_dir"] = tempfile.TemporaryDirectory()
+    temporary = ctx["snapshot_dir"]
+    backup = Path(temporary.name) / str(len(snapshots))
+    if path.is_dir():
+        shutil.copytree(path, backup)
+        snapshots[path] = backup
+    elif path.exists():
+        shutil.copy2(path, backup)
+        snapshots[path] = backup
+    else:
+        snapshots[path] = None
 
 
 def _record_created(path: Path, ctx: Dict[str, Any]) -> None:
@@ -1016,6 +1095,7 @@ def op_copy_dir(op: Dict[str, Any], ctx: Dict[str, Any]) -> None:
         write_log({"level": "INFO", "message": f"Skip existing dir: {dst}"}, ctx)
         return
 
+    _snapshot_path(dst, ctx)
     dst.parent.mkdir(parents=True, exist_ok=True)
     shutil.copytree(src, dst, dirs_exist_ok=True)
     if not existed_before:
@@ -1034,13 +1114,18 @@ def op_merge_dir(op: Dict[str, Any], ctx: Dict[str, Any]) -> List[str]:
         if not subdir.is_dir():
             continue
         target_subdir = install_dir / subdir.name
+        if not target_subdir.exists():
+            _record_created(target_subdir, ctx)
         target_subdir.mkdir(parents=True, exist_ok=True)
         for f in subdir.iterdir():
             if f.is_file():
                 dst = target_subdir / f.name
                 if dst.exists() and not force:
                     continue
+                _snapshot_path(dst, ctx)
                 shutil.copy2(f, dst)
+                if ctx["snapshots"][dst.resolve()] is None:
+                    _record_created(dst, ctx)
                 merged.append(f"{subdir.name}/{f.name}")
 
     write_log({"level": "INFO", "message": f"Merged {src.name}: {', '.join(merged) or 'no files'}"}, ctx)
@@ -1056,6 +1141,7 @@ def op_copy_file(op: Dict[str, Any], ctx: Dict[str, Any]) -> None:
         write_log({"level": "INFO", "message": f"Skip existing file: {dst}"}, ctx)
         return
 
+    _snapshot_path(dst, ctx)
     dst.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(src, dst)
     if not existed_before:
@@ -1074,6 +1160,7 @@ def op_merge_json(op: Dict[str, Any], ctx: Dict[str, Any]) -> None:
 
     src_data = _load_json(src)
 
+    _snapshot_path(dst, ctx)
     dst.parent.mkdir(parents=True, exist_ok=True)
     if dst.exists():
         dst_data = _load_json(dst)
@@ -1263,6 +1350,15 @@ def install_default_configs(ctx: Dict[str, Any]) -> None:
             shutil.copy2(claude_md_src, claude_md_dst)
             print(f"  Installed CLAUDE.md to {claude_md_dst}")
             write_log({"level": "INFO", "message": f"Installed CLAUDE.md to {claude_md_dst}"}, ctx)
+        skill_dst = install_dir / "skills" / "codeagent" / "SKILL.md"
+        if (claude_md_dst.exists() and claude_md_src.exists()
+                and claude_md_dst.read_bytes() == claude_md_src.read_bytes()
+                and not skill_dst.exists()):
+            skill_src = config_dir / "skills" / "codeagent" / "SKILL.md"
+            skill_dst.parent.mkdir(parents=True, exist_ok=True)
+            with skill_src.open("rb") as source, skill_dst.open("xb") as target:
+                shutil.copyfileobj(source, target)
+            print("Installed codeagent skill (required by CLAUDE.md)")
     except Exception as exc:
         print(f"  Warning: could not install default configs: {exc}", file=sys.stderr)
 
@@ -1346,6 +1442,23 @@ def rollback(ctx: Dict[str, Any]) -> None:
                 ctx,
             )
 
+    for path, backup_path in reversed(list(ctx.pop("snapshots", {}).items())):
+        if path.is_dir():
+            shutil.rmtree(path)
+        elif path.exists():
+            path.unlink()
+        if backup_path is not None:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            if backup_path.is_dir():
+                shutil.copytree(backup_path, path)
+            else:
+                shutil.copy2(backup_path, path)
+    for result in ctx.pop("transaction_results", []):
+        result["status"] = "rolled_back"
+    ctx["applied_paths"] = []
+    if "snapshot_dir" in ctx:
+        ctx.pop("snapshot_dir").cleanup()
+
     backup = ctx.get("status_backup")
     if backup and Path(backup).exists():
         shutil.copy2(backup, ctx["status_file"])
@@ -1362,6 +1475,13 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
         return 1
 
     ctx = resolve_paths(config, args)
+    if args.module:
+        try:
+            select_modules(config, args.module)
+        except ValueError as exc:
+            print(str(exc), file=sys.stderr)
+            list_modules(config)
+            return 1
 
     # Handle --list-modules
     if getattr(args, "list_modules", False):
@@ -1390,6 +1510,7 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
             return 0
 
         print(f"Uninstalling {len(to_uninstall)} module(s): {', '.join(to_uninstall.keys())}")
+        ctx["uninstalling_modules"] = set(to_uninstall)
         for name, cfg in to_uninstall.items():
             try:
                 uninstall_module(name, cfg, ctx)
@@ -1403,27 +1524,35 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
 
     # Handle --update
     if getattr(args, "update", False):
-        try:
-            ensure_install_dir(ctx["install_dir"])
-        except Exception as exc:
-            print(f"Failed to prepare install dir: {exc}", file=sys.stderr)
-            return 1
-
-        installed_status = get_installed_modules(config, ctx)
-        if args.module:
-            selected = select_modules(config, args.module)
-            modules = {k: v for k, v in selected.items() if installed_status.get(k, False)}
-        else:
-            modules = {
-                k: v
-                for k, v in config.get("modules", {}).items()
-                if installed_status.get(k, False)
-            }
+        if not Path(ctx["status_file"]).exists():
+            detected = [name for name, cfg in config.get("modules", {}).items()
+                        if check_module_installed(name, cfg, ctx)]
+            hint = f" Run: python install.py --module {','.join(detected)} --update" if detected else ""
+            print(f"No installation status found. Detected: {', '.join(detected) or 'none'}.{hint}")
+            if args.module:
+                for name in select_modules(config, args.module):
+                    print(f"{name} is not installed; run without --update to install it")
+            return 0
+        installed_status = load_installed_status(ctx).get("modules", {})
+        candidates = (select_modules(config, args.module) if args.module else
+                      {k: v for k, v in config.get("modules", {}).items() if k in installed_status})
+        modules = {}
+        for name, cfg in candidates.items():
+            entry = installed_status.get(name)
+            if not isinstance(entry, dict) or entry.get("status", "installed") not in ("installed", "success"):
+                print(f"{name} is not installed; run without --update to install it")
+                continue
+            modules[name] = cfg
 
         if not modules:
             print("No installed modules to update.")
             return 0
 
+        try:
+            ensure_install_dir(ctx["install_dir"])
+        except Exception as exc:
+            print(f"Failed to prepare install dir: {exc}", file=sys.stderr)
+            return 1
         ctx["force"] = True
         prepare_status_backup(ctx)
 
