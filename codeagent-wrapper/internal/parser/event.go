@@ -57,6 +57,7 @@ type UnifiedEvent struct {
 	// Opencode-specific fields (camelCase sessionID)
 	OpencodeSessionID string          `json:"sessionID,omitempty"`
 	Part              json.RawMessage `json:"part,omitempty"`
+	Error             json.RawMessage `json:"error,omitempty"`
 }
 
 // OpencodePart represents the part field in opencode events.

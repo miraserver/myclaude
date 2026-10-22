@@ -35,6 +35,12 @@ var lineScratchPool = sync.Pool{
 }
 
 func ParseJSONStreamInternal(r io.Reader, warnFn func(string), infoFn func(string), onMessage func(), onComplete func()) (message, threadID string) {
+	message, threadID, _ = ParseJSONStreamWithError(r, warnFn, infoFn, onMessage, onComplete)
+	return
+}
+
+// ParseJSONStreamWithError preserves stream diagnostics for task failure reporting.
+func ParseJSONStreamWithError(r io.Reader, warnFn func(string), infoFn func(string), onMessage func(), onComplete func()) (message, threadID string, streamErr error) {
 	reader := bufio.NewReaderSize(r, jsonLineReaderSize)
 	scratch := lineScratchPool.Get().(*lineScratch)
 	if scratch.buf == nil {
@@ -68,6 +74,7 @@ func ParseJSONStreamInternal(r io.Reader, warnFn func(string), infoFn func(strin
 		infoFn = func(string) {}
 	}
 
+	var droppedJSON bool
 	notifyMessage := func() {
 		if onMessage != nil {
 			onMessage()
@@ -75,6 +82,7 @@ func ParseJSONStreamInternal(r io.Reader, warnFn func(string), infoFn func(strin
 	}
 
 	notifyComplete := func() {
+		droppedJSON = false
 		if onComplete != nil {
 			onComplete()
 		}
@@ -106,6 +114,9 @@ func ParseJSONStreamInternal(r io.Reader, warnFn func(string), infoFn func(strin
 		totalEvents++
 
 		if tooLong {
+			if line[0] == '{' {
+				droppedJSON = true
+			}
 			warnFn(fmt.Sprintf("Skipped overlong JSON line (> %d bytes): %s", jsonLineMaxBytes, TruncateBytes(line, 100)))
 			continue
 		}
@@ -113,6 +124,9 @@ func ParseJSONStreamInternal(r io.Reader, warnFn func(string), infoFn func(strin
 		// Single unmarshal for all backend types
 		var event UnifiedEvent
 		if err := json.Unmarshal(line, &event); err != nil {
+			if line[0] == '{' {
+				droppedJSON = true
+			}
 			warnFn(fmt.Sprintf("Failed to parse event: %s", TruncateBytes(line, 100)))
 			continue
 		}
@@ -136,12 +150,17 @@ func ParseJSONStreamInternal(r io.Reader, warnFn func(string), infoFn func(strin
 			isClaude = true
 		}
 		isGemini := (event.Type == "init" && event.SessionID != "") || event.Role != "" || event.Delta != nil || event.Status != ""
-		isOpencode := event.OpencodeSessionID != "" && len(event.Part) > 0
+		isOpencode := event.OpencodeSessionID != "" && (len(event.Part) > 0 || event.Type == "error")
 
 		// Handle Opencode events first (most specific detection)
 		if isOpencode {
 			if threadID == "" {
 				threadID = event.OpencodeSessionID
+			}
+
+			if event.Type == "error" {
+				streamErr = fmt.Errorf("OpenCode error: %s", opencodeErrorMessage(event.Error))
+				continue
 			}
 
 			var part OpencodePart
@@ -159,6 +178,7 @@ func ParseJSONStreamInternal(r io.Reader, warnFn func(string), infoFn func(strin
 
 			if event.Type == "text" && part.Text != "" {
 				opencodeMessage.WriteString(part.Text)
+				droppedJSON = false
 				notifyMessage()
 			}
 
@@ -216,6 +236,7 @@ func ParseJSONStreamInternal(r io.Reader, warnFn func(string), infoFn func(strin
 						infoFn(fmt.Sprintf("item.completed event item_type=%s message_len=%d", itemType, len(normalized)))
 						if normalized != "" {
 							codexMessage = normalized
+							droppedJSON = false
 							notifyMessage()
 						}
 					} else {
@@ -238,6 +259,7 @@ func ParseJSONStreamInternal(r io.Reader, warnFn func(string), infoFn func(strin
 
 			if event.Result != "" {
 				claudeMessage = event.Result
+				droppedJSON = false
 				notifyMessage()
 			}
 
@@ -255,6 +277,7 @@ func ParseJSONStreamInternal(r io.Reader, warnFn func(string), infoFn func(strin
 
 			if event.Content != "" && event.Role != "user" && event.Role != "system" {
 				geminiBuffer.WriteString(event.Content)
+				droppedJSON = false
 			}
 
 			if event.Status != "" {
@@ -290,7 +313,10 @@ func ParseJSONStreamInternal(r io.Reader, warnFn func(string), infoFn func(strin
 	}
 
 	infoFn(fmt.Sprintf("parseJSONStream completed: events=%d, message_len=%d, thread_id_found=%t", totalEvents, len(message), threadID != ""))
-	return message, threadID
+	if streamErr == nil && droppedJSON {
+		streamErr = errors.New("backend output truncated/unparsable; final message may be lost")
+	}
+	return message, threadID, streamErr
 }
 
 func HasKey(m map[string]json.RawMessage, key string) bool {
@@ -374,6 +400,11 @@ func readLineWithLimit(r *bufio.Reader, maxBytes int, previewBytes int, scratch 
 	for isPrefix {
 		part, isPrefix, err = r.ReadLine()
 		if err != nil {
+			// EOF after a full reader fragment still leaves a final line to
+			// process (or report as dropped), even without a trailing newline.
+			if errors.Is(err, io.EOF) {
+				break
+			}
 			return nil, tooLong, err
 		}
 
@@ -433,4 +464,35 @@ func min(a, b int) int {
 		return a
 	}
 	return b
+}
+
+// OpenCode API errors normally use data.message; also accept plain messages
+// and retain the raw payload when the backend supplies an unfamiliar shape.
+func opencodeErrorMessage(raw json.RawMessage) string {
+	var text string
+	if json.Unmarshal(raw, &text) == nil && text != "" {
+		return text
+	}
+	var detail struct {
+		Name    string `json:"name"`
+		Message string `json:"message"`
+		Data    struct {
+			Message string `json:"message"`
+		} `json:"data"`
+	}
+	if json.Unmarshal(raw, &detail) == nil {
+		if detail.Data.Message != "" {
+			return detail.Data.Message
+		}
+		if detail.Message != "" {
+			return detail.Message
+		}
+		if detail.Name != "" {
+			return detail.Name
+		}
+	}
+	if len(raw) > 0 {
+		return string(raw)
+	}
+	return "unknown backend error"
 }

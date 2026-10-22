@@ -3,6 +3,7 @@ package executor
 import "bytes"
 
 type logWriter struct {
+	emit    func(string)
 	prefix  string
 	maxLen  int
 	buf     bytes.Buffer
@@ -68,7 +69,11 @@ func (lw *logWriter) logLine(force bool) {
 			}
 		}
 	}
-	logInfo(lw.prefix + line)
+	if lw.emit != nil {
+		lw.emit(lw.prefix + line)
+	} else {
+		logInfo(lw.prefix + line)
+	}
 }
 
 func (lw *logWriter) writeLimited(p []byte) {

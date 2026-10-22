@@ -401,6 +401,7 @@ var newCommandRunner = func(ctx context.Context, name string, args ...string) co
 }
 
 type parseResult struct {
+	err      error
 	message  string
 	threadID string
 }
@@ -1108,13 +1109,12 @@ func RunCodexTaskWithContext(parentCtx context.Context, taskSpec TaskSpec, backe
 		result.LogPath = logger.Path()
 	}
 
-	if !silent {
-		// Note: Empty prefix ensures backend output is logged as-is without any wrapper format.
-		// This preserves the original stdout/stderr content from codex/claude/gemini backends.
-		// Trade-off: Reduces distinguishability between stdout/stderr in logs, but maintains
-		// output fidelity which is critical for debugging backend-specific issues.
-		stdoutLogger = newLogWriter("", codexLogLineLimit)
-		stderrLogger = newLogWriter("", codexLogLineLimit)
+	// Backend output always goes to the task log; silent only suppresses console output.
+	stdoutLogger = newLogWriter("", codexLogLineLimit)
+	stderrLogger = newLogWriter("", codexLogLineLimit)
+	if logger != nil {
+		stdoutLogger.emit = logger.Info
+		stderrLogger.emit = logger.Info
 	}
 
 	ctx := parentCtx
@@ -1338,7 +1338,7 @@ func RunCodexTaskWithContext(parentCtx context.Context, taskSpec TaskSpec, backe
 	parseDone := make(chan struct{})
 	go func() {
 		defer close(parseDone)
-		msg, tid := parseJSONStreamInternal(stdoutReader, logWarnFn, logInfoFn, func() {
+		msg, tid, streamErr := parser.ParseJSONStreamWithError(stdoutReader, logWarnFn, logInfoFn, func() {
 			if firstMessageSeen.CompareAndSwap(false, true) {
 				emitProgress(silent, "streaming", taskSpec, commandName, result.LogPath, 0)
 			}
@@ -1347,7 +1347,7 @@ func RunCodexTaskWithContext(parentCtx context.Context, taskSpec TaskSpec, backe
 				emitProgress(silent, "backend-complete", taskSpec, commandName, result.LogPath, 0)
 			}
 		})
-		parseCh <- parseResult{message: msg, threadID: tid}
+		parseCh <- parseResult{message: msg, threadID: tid, err: streamErr}
 	}()
 
 	waitCh := make(chan error, 1)
@@ -1428,6 +1428,10 @@ waitLoop:
 		<-stderrDone
 	}
 
+	// Flush after both readers stop, including failure paths and unterminated lines.
+	stdoutLogger.Flush()
+	stderrLogger.Flush()
+
 	if ctxErr := ctx.Err(); ctxErr != nil {
 		result.ExitCode = 130
 		result.Error = attachStderr("execution cancelled")
@@ -1459,6 +1463,16 @@ waitLoop:
 		logErrorFn(commandName + " error: " + waitErr.Error())
 		result.ExitCode = 1
 		result.Error = attachStderr(commandName + " error: " + waitErr.Error())
+		emitProgress(silent, "failed", taskSpec, commandName, result.LogPath, time.Since(startedAt))
+		return result
+	}
+
+	if parsed.err != nil {
+		result.ExitCode = 1
+		result.Error = fmt.Sprintf("%s; see log %s", parsed.err, result.LogPath)
+		result.Message = parsed.message
+		result.SessionID = parsed.threadID
+		logErrorFn(result.Error)
 		emitProgress(silent, "failed", taskSpec, commandName, result.LogPath, time.Since(startedAt))
 		return result
 	}
