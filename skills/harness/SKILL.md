@@ -31,7 +31,7 @@ Executable protocol enabling any agent task to run continuously across multiple 
 Hooks only take effect when `.harness-active` marker file exists in the harness root (same directory as `harness-tasks.json`).
 
 - `/harness init` and `/harness run` MUST create this marker: `touch <project-path>/.harness-active`
-- When all tasks complete (no pending/in_progress/retryable left), remove it: `rm <project-path>/.harness-active`
+- When a nonempty task list completes (no pending/in_progress/retryable left), remove it: `rm <project-path>/.harness-active`; an empty list leaves the marker unchanged and does not trigger reflection.
 - Without this marker, all hooks are no-ops — they exit 0 immediately
 
 ## Progress Persistence (Dual-File System)

@@ -3,7 +3,7 @@
 
 仅在以下条件同时满足时生效：
   1. harness-tasks.json 存在（harness 曾被初始化）
-  2. .harness-active 不存在（harness 任务已全部完成）
+  2. .harness-reflect 存在（其中保存本次完成后的自省迭代计数）
 
 当 harness 未曾启动时，本 hook 是完全的 no-op。
 
@@ -16,7 +16,6 @@ from __future__ import annotations
 import json
 import os
 import sys
-import tempfile
 from pathlib import Path
 from typing import Any, Optional
 
@@ -62,25 +61,57 @@ def _find_harness_root(payload: dict[str, Any]) -> Optional[Path]:
     return None
 
 
-def _counter_path(session_id: str) -> Path:
-    """每个 session 独立计数文件。"""
-    return Path(tempfile.gettempdir()) / f"claude-reflect-{session_id}"
-
-
-def _read_counter(session_id: str) -> int:
-    p = _counter_path(session_id)
+def _read_counter(marker: Path) -> int:
+    """Read the iteration count for this harness completion."""
     try:
-        return int(p.read_text("utf-8").strip().split("\n")[0])
+        return int(marker.read_text("utf-8").strip())
     except Exception:
         return 0
 
 
-def _write_counter(session_id: str, count: int) -> None:
-    p = _counter_path(session_id)
+def _write_counter(marker: Path, count: int) -> None:
     try:
-        p.write_text(str(count), encoding="utf-8")
+        marker.write_text(str(count), encoding="utf-8")
     except Exception:
         pass
+
+
+def _user_text(entry: Any) -> str:
+    """Extract prompt text from a non-synthetic user transcript entry."""
+    if not isinstance(entry, dict) or entry.get("isMeta") or entry.get("isCompactSummary"):
+        return ""
+    message = entry.get("message")
+    if not isinstance(message, dict):
+        message = entry
+    role = message.get("role") or entry.get("role") or entry.get("type", "")
+    if role != "user":
+        return ""
+    content = message.get("content", entry.get("content", ""))
+    if isinstance(content, list):
+        texts = []
+        for block in content:
+            if isinstance(block, dict):
+                if block.get("type") == "tool_result":
+                    continue
+                text = block.get("text", "")
+                if isinstance(text, str) and text:
+                    texts.append(text)
+            elif isinstance(block, str):
+                texts.append(block)
+        content = "\n".join(texts)
+    if not isinstance(content, str) or not content.strip():
+        return ""
+    if len(content) > 2000:
+        content = content[:2000] + "..."
+    return content.strip()
+
+
+def _transcript_user_text(line: str) -> str:
+    """Ignore blank or malformed JSONL records when extracting user text."""
+    try:
+        return _user_text(json.loads(line))
+    except Exception:
+        return ""
 
 
 def _extract_original_prompt(transcript_path: str, max_bytes: int = 100_000) -> str:
@@ -90,37 +121,8 @@ def _extract_original_prompt(transcript_path: str, max_bytes: int = 100_000) -> 
         if not p.is_file():
             return ""
         with p.open("r", encoding="utf-8") as f:
-            # JSONL 格式，逐行解析找第一条 user message
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    entry = json.loads(line)
-                except Exception:
-                    continue
-                if not isinstance(entry, dict):
-                    continue
-                # Claude Code transcript 格式：role + content
-                role = entry.get("role") or entry.get("type", "")
-                if role == "user":
-                    content = entry.get("content", "")
-                    if isinstance(content, list):
-                        # content 可能是 list of blocks
-                        texts = []
-                        for block in content:
-                            if isinstance(block, dict):
-                                t = block.get("text", "")
-                                if t:
-                                    texts.append(t)
-                            elif isinstance(block, str):
-                                texts.append(block)
-                        content = "\n".join(texts)
-                    if isinstance(content, str) and content.strip():
-                        # 截断过长的 prompt
-                        if len(content) > 2000:
-                            content = content[:2000] + "..."
-                        return content.strip()
+            # Read JSONL lazily, stopping at the first nonempty user prompt.
+            return next(filter(None, map(_transcript_user_text, f)), "")
     except Exception:
         pass
     return ""
@@ -140,7 +142,8 @@ def main() -> int:
     if root is None:
         return 0
 
-    if not (root / ".harness-reflect").is_file():
+    marker = root / ".harness-reflect"
+    if not marker.is_file():
         return 0
 
     # 读取最大迭代次数
@@ -154,18 +157,18 @@ def main() -> int:
         return 0
 
     # 读取当前计数
-    count = _read_counter(session_id)
+    count = _read_counter(marker)
 
     # 超过最大次数，清理 marker 并放行
     if count >= max_iter:
         try:
-            (root / ".harness-reflect").unlink(missing_ok=True)
+            marker.unlink(missing_ok=True)
         except Exception:
             pass
         return 0
 
     # 递增计数
-    _write_counter(session_id, count + 1)
+    _write_counter(marker, count + 1)
 
     # 提取原始 prompt
     transcript_path = payload.get("transcript_path", "")

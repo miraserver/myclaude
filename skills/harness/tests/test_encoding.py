@@ -4,7 +4,6 @@ import subprocess
 import sys
 import tempfile
 import uuid
-from pathlib import Path
 
 import pytest
 
@@ -22,6 +21,7 @@ def run_encoded(command, payload, encoding, bom=False, env_extra=None):
     if bom:
         raw = b"\xef\xbb\xbf" + raw
     with tempfile.TemporaryDirectory() as isolated_cwd:
+        env.update({"TMP": isolated_cwd, "TEMP": isolated_cwd, "TMPDIR": isolated_cwd})
         proc = subprocess.run(
             [sys.executable, *map(str, command)],
             cwd=isolated_cwd,
@@ -58,24 +58,21 @@ def test_hook_utf8_payload_and_ascii_json(tmp_path, script, encoding, bom):
         "cwd": str(root), "title": TITLE, "task_id": TITLE,
         "transcript_path": str(transcript), "session_id": session_id,
     }
-    try:
-        code, stdout, stderr = run_encoded(
-            [script], payload, encoding, bom,
-            {"HARNESS_WORKER_ID": "worker", "REFLECT_MAX_ITERATIONS": "5"},
-        )
-        assert code == 0, stderr
-        assert stderr == ""
-        if script.name == "harness-teammateidle.py":
-            assert stdout == ""  # This hook uses stderr and exit 2 to block.
-        else:
-            assert stdout.isascii()
-            data = json.loads(stdout)
-            text = data.get("reason", data.get("title", data.get("task_id")))
-            if script.name == "harness-sessionstart.py":
-                text = data["hookSpecificOutput"]["additionalContext"]
-            assert TITLE in text
-    finally:
-        (Path(tempfile.gettempdir()) / ("claude-reflect-" + session_id)).unlink(missing_ok=True)
+    code, stdout, stderr = run_encoded(
+        [script], payload, encoding, bom,
+        {"HARNESS_WORKER_ID": "worker", "REFLECT_MAX_ITERATIONS": "5"},
+    )
+    assert code == 0, stderr
+    assert stderr == ""
+    if script.name == "harness-teammateidle.py":
+        assert stdout == ""  # This hook uses stderr and exit 2 to block.
+    else:
+        assert stdout.isascii()
+        data = json.loads(stdout)
+        text = data.get("reason", data.get("title", data.get("task_id")))
+        if script.name == "harness-sessionstart.py":
+            text = data["hookSpecificOutput"]["additionalContext"]
+        assert TITLE in text
 
 
 @pytest.mark.parametrize("encoding", ["cp1252", "cp1251", "ascii"])

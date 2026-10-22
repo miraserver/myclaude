@@ -142,10 +142,10 @@ class TestActivationGuard(unittest.TestCase):
     def test_subagentstop_active_blocks(self):
         """SubagentStop hook blocks when active and tasks in progress."""
         write_tasks(self.root, [
-            {"id": "t1", "title": "Working task", "status": "in_progress", "priority": "P0", "depends_on": []},
+            {"id": "t1", "title": "Working task", "status": "in_progress", "claimed_by": "agent-a", "priority": "P0", "depends_on": []},
         ])
         activate(self.root)
-        code, stdout, stderr = run_hook(SUBAGENT_HOOK, self._payload())
+        code, stdout, stderr = run_hook(SUBAGENT_HOOK, self._payload(agent_id="agent-a"))
         self.assertEqual(code, 0)
         data = json.loads(stdout)
         self.assertEqual(data["decision"], "block")
@@ -203,6 +203,17 @@ class TestStopHookTaskLogic(unittest.TestCase):
 
     def _payload(self, **extra):
         return {"cwd": self.tmpdir, **extra}
+
+    def test_empty_tasks_preserves_active_without_reflection(self):
+        write_tasks(self.root, [])
+        marker = self.root / ".harness-active"
+        marker.write_text("init", encoding="utf-8")
+        before = marker.stat().st_mtime_ns
+        code, stdout, stderr = run_hook(STOP_HOOK, self._payload())
+        self.assertEqual((code, stdout, stderr), (0, "", ""))
+        self.assertFalse((self.root / ".harness-reflect").exists())
+        self.assertEqual(marker.read_text(encoding="utf-8"), "init")
+        self.assertEqual(marker.stat().st_mtime_ns, before)
 
     def test_all_completed_allows_stop(self):
         """When all tasks are completed, stop is allowed and .harness-reflect created."""
@@ -501,12 +512,41 @@ class TestSubagentStopHook(unittest.TestCase):
 
     def test_in_progress_blocks(self):
         write_tasks(self.root, [
-            {"id": "t1", "status": "in_progress", "title": "Working"},
+            {"id": "t1", "status": "in_progress", "claimed_by": "agent-a", "title": "Working"},
         ])
-        code, stdout, _ = run_hook(SUBAGENT_HOOK, {"cwd": self.tmpdir})
+        code, stdout, _ = run_hook(SUBAGENT_HOOK, {"cwd": self.tmpdir, "agent_id": "agent-a"})
+        self.assertEqual(code, 0)
         data = json.loads(stdout)
         self.assertEqual(data["decision"], "block")
         self.assertIn("Working", data["reason"])
+
+    def test_exclusive_unrelated_agent_allows(self):
+        write_tasks(self.root, [
+            {"id": "t1", "status": "in_progress", "claimed_by": "main"},
+        ], session_config={"concurrency_mode": "exclusive"})
+        result = run_hook(SUBAGENT_HOOK, {"cwd": self.tmpdir, "agent_id": "explore"})
+        self.assertEqual(result, (0, "", ""))
+
+    def test_identity_sources_in_both_modes(self):
+        for mode in ("exclusive", "concurrent"):
+            for source in ("HARNESS_WORKER_ID", "agent_id", "teammate_name"):
+                with self.subTest(mode=mode, source=source):
+                    write_tasks(self.root, [
+                        {"id": "t1", "status": "in_progress", "claimed_by": "owner"},
+                    ], session_config={"concurrency_mode": mode})
+                    payload = {"cwd": self.tmpdir}
+                    env = {}
+                    if source == "HARNESS_WORKER_ID":
+                        env[source] = "owner"
+                    else:
+                        payload[source] = "owner"
+                    code, stdout, stderr = run_hook(SUBAGENT_HOOK, payload, env)
+                    self.assertEqual((code, stderr), (0, ""))
+                    self.assertEqual(json.loads(stdout)["decision"], "block")
+
+    def test_exclusive_missing_identity_allows(self):
+        write_tasks(self.root, [{"id": "t1", "status": "in_progress", "claimed_by": "main"}])
+        self.assertEqual(run_hook(SUBAGENT_HOOK, {"cwd": self.tmpdir}), (0, "", ""))
 
     def test_pending_allows(self):
         write_tasks(self.root, [
@@ -529,9 +569,9 @@ class TestSubagentStopHook(unittest.TestCase):
     def test_stop_hook_active_allows(self):
         """stop_hook_active=True bypasses all checks to prevent infinite loop."""
         write_tasks(self.root, [
-            {"id": "t1", "status": "in_progress"},
+            {"id": "t1", "status": "in_progress", "claimed_by": "agent-a"},
         ])
-        code, stdout, _ = run_hook(SUBAGENT_HOOK, {"cwd": self.tmpdir, "stop_hook_active": True})
+        code, stdout, _ = run_hook(SUBAGENT_HOOK, {"cwd": self.tmpdir, "agent_id": "agent-a", "stop_hook_active": True})
         self.assertEqual(code, 0)
         self.assertEqual(stdout, "")
 
@@ -568,14 +608,13 @@ class TestSubagentStopHook(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertEqual(stdout, "")
 
-    def test_concurrent_missing_identity_blocks(self):
+    def test_concurrent_missing_identity_allows(self):
         write_tasks(self.root, [
             {"id": "t1", "status": "in_progress", "claimed_by": "worker-a", "title": "Other"},
         ], session_config={"concurrency_mode": "concurrent"})
         code, stdout, _ = run_hook(SUBAGENT_HOOK, {"cwd": self.tmpdir})
-        data = json.loads(stdout)
-        self.assertEqual(data["decision"], "block")
-        self.assertIn("worker identity", data["reason"])
+        self.assertEqual(code, 0)
+        self.assertEqual(stdout, "")
 
 
 # ---------------------------------------------------------------------------
@@ -735,9 +774,8 @@ class TestSelfReflectStopHook(unittest.TestCase):
         self._set_reflect()
         sid = "test-reflect-max"
 
-        # Write counter at max
-        counter_path = self.root / f"claude-reflect-{sid}"
-        counter_path.write_text("5", encoding="utf-8")
+        # The completion marker holds the count.
+        (self.root / ".harness-reflect").write_text("5", encoding="utf-8")
 
         code, stdout, _ = run_hook(REFLECT_HOOK, self._payload(session_id=sid))
         self.assertEqual(code, 0)
@@ -746,6 +784,89 @@ class TestSelfReflectStopHook(unittest.TestCase):
             (self.root / ".harness-reflect").exists(),
             ".harness-reflect should be cleaned up after max iterations",
         )
+
+    def test_two_completions_in_same_session_restart_at_one(self):
+        write_tasks(self.root, [{"id": "t1", "status": "completed"}])
+        for completion in range(2):
+            activate(self.root)
+            self.assertEqual(run_hook(STOP_HOOK, self._payload()), (0, "", ""))
+            marker = self.root / ".harness-reflect"
+            for iteration in (1, 2):
+                code, stdout, stderr = run_hook(
+                    REFLECT_HOOK, self._payload(), {"REFLECT_MAX_ITERATIONS": "2"},
+                )
+                self.assertEqual((code, stderr), (0, ""))
+                self.assertIn(f"{iteration}/2", json.loads(stdout)["reason"])
+                self.assertEqual(marker.read_text(encoding="utf-8"), str(iteration))
+                self.assertEqual(list(self.root.glob("claude-reflect-*")), [])
+            self.assertEqual(run_hook(
+                REFLECT_HOOK, self._payload(), {"REFLECT_MAX_ITERATIONS": "2"},
+            ), (0, "", ""))
+            self.assertFalse(marker.exists())
+
+    def test_unparseable_marker_starts_at_zero(self):
+        write_tasks(self.root, [{"id": "t1", "status": "completed"}])
+        marker = self.root / ".harness-reflect"
+        marker.write_text("invalid count", encoding="utf-8")
+        code, stdout, stderr = run_hook(REFLECT_HOOK, self._payload())
+        self.assertEqual((code, stderr), (0, ""))
+        self.assertIn("1/5", json.loads(stdout)["reason"])
+        self.assertEqual(marker.read_text(encoding="utf-8"), "1")
+
+    def test_new_completion_resets_unfinished_reflection(self):
+        write_tasks(self.root, [{"id": "t1", "status": "completed"}])
+        marker = self.root / ".harness-reflect"
+        marker.write_text("3", encoding="utf-8")
+        activate(self.root)
+        self.assertEqual(run_hook(STOP_HOOK, self._payload()), (0, "", ""))
+        code, stdout, stderr = run_hook(REFLECT_HOOK, self._payload())
+        self.assertEqual((code, stderr), (0, ""))
+        self.assertIn("1/5", json.loads(stdout)["reason"])
+
+    def test_real_transcript_prompt_skips_meta_and_tool_results(self):
+        write_tasks(self.root, [{"id": "t1", "status": "completed"}])
+        self._set_reflect()
+        prompt = "Реализуй 功能 X"
+        transcript = self.root / "transcript.jsonl"
+        entries = [
+            {"type": "user", "isMeta": True,
+             "message": {"role": "user", "content": "metadata"}},
+            {"type": "user", "message": {"role": "user", "content": [
+                {"type": "tool_result", "text": "tool output", "content": "tool output"},
+            ]}},
+            {"type": "user", "message": {"role": "user", "content": [
+                {"type": "text", "text": prompt},
+            ]}},
+        ]
+        transcript.write_text("\n".join(json.dumps(e, ensure_ascii=False) for e in entries), encoding="utf-8")
+        code, stdout, stderr = run_hook(
+            REFLECT_HOOK, self._payload(transcript_path=str(transcript)),
+        )
+        self.assertEqual((code, stderr), (0, ""))
+        reason = json.loads(stdout)["reason"]
+        self.assertIn(prompt, reason)
+        self.assertNotIn("metadata", reason)
+        self.assertNotIn("tool output", reason)
+
+    def test_real_transcript_prompt_skips_compact_summary(self):
+        write_tasks(self.root, [{"id": "t1", "status": "completed"}])
+        self._set_reflect()
+        prompt = "Реализуй 功能 X"
+        summary = "This session is being continued from a previous conversation."
+        transcript = self.root / "transcript.jsonl"
+        entries = [
+            {"type": "user", "isCompactSummary": True,
+             "message": {"role": "user", "content": summary}},
+            {"type": "user", "message": {"role": "user", "content": prompt}},
+        ]
+        transcript.write_text("\n".join(json.dumps(e, ensure_ascii=False) for e in entries), encoding="utf-8")
+        code, stdout, stderr = run_hook(
+            REFLECT_HOOK, self._payload(transcript_path=str(transcript)),
+        )
+        self.assertEqual((code, stderr), (0, ""))
+        reason = json.loads(stdout)["reason"]
+        self.assertIn(prompt, reason)
+        self.assertNotIn(summary, reason)
 
     def test_disabled_via_env(self):
         """REFLECT_MAX_ITERATIONS=0 disables self-reflection."""

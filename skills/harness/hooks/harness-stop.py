@@ -186,6 +186,10 @@ def main() -> int:
         print(json.dumps({"decision": "block", "reason": reason}, ensure_ascii=True))
         return 0
 
+    # Initialization alone is not a completed harness run.
+    if not tasks:
+        return 0
+
     session_config = state.get("session_config") or {}
     if not isinstance(session_config, dict):
         session_config = {}
@@ -255,7 +259,7 @@ def main() -> int:
         _reset_block_counter(root)
         # Signal self-reflect hook BEFORE removing active marker
         try:
-            (root / ".harness-reflect").touch()
+            (root / ".harness-reflect").write_text("", encoding="utf-8")
         except Exception:
             pass
         try:

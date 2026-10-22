@@ -77,10 +77,6 @@ def main() -> int:
     tasks_path = root / "harness-tasks.json"
     try:
         state = _load_json(tasks_path)
-        session_config = state.get("session_config") or {}
-        if not isinstance(session_config, dict):
-            session_config = {}
-        is_concurrent = str(session_config.get("concurrency_mode") or "exclusive") == "concurrent"
         tasks_raw = state.get("tasks") or []
         if not isinstance(tasks_raw, list):
             return 0
@@ -94,21 +90,10 @@ def main() -> int:
     teammate_name = str(payload.get("teammate_name") or "").strip()
     identities = {x for x in (worker_id, agent_id, teammate_name) if x}
 
-    if is_concurrent and in_progress and not identities:
-        reason = (
-            "HARNESS: concurrent 模式缺少 worker identity（HARNESS_WORKER_ID/agent_id）。"
-            "为避免误停导致任务悬空，本次阻止停止。"
-        )
-        print(json.dumps({"decision": "block", "reason": reason}, ensure_ascii=True))
-        return 0
-
-    if is_concurrent:
-        owned = [
-            t for t in in_progress
-            if str(t.get("claimed_by") or "") in identities
-        ] if identities else []
-    else:
-        owned = in_progress
+    owned = [
+        t for t in in_progress
+        if str(t.get("claimed_by") or "") in identities
+    ]
 
     # Only block when this subagent still owns in-progress work.
     if owned:
