@@ -7,7 +7,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "[ -f .sparv/state.yaml ] && ${SKILL_PATH}/scripts/save-progress.sh \"${TOOL_NAME:-unknown}\" \"completed\" 2>/dev/null || true"
+            "command": "[ -d .sparv/plan ] && ${SKILL_PATH}/scripts/save-progress.sh \"${TOOL_NAME:-unknown}\" \"completed\" 2>/dev/null || true"
           }
         ]
       }
@@ -18,7 +18,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "[ -f .sparv/state.yaml ] && ${SKILL_PATH}/scripts/check-ehrb.sh --diff --dry-run 2>/dev/null || true"
+            "command": "[ -d .sparv/plan ] && ${SKILL_PATH}/scripts/check-ehrb.sh --diff --dry-run 2>/dev/null || true"
           }
         ]
       }
@@ -28,7 +28,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "[ -f .sparv/state.yaml ] && ${SKILL_PATH}/scripts/reboot-test.sh --strict 2>/dev/null || true"
+            "command": "[ -d .sparv/plan ] && ${SKILL_PATH}/scripts/reboot-test.sh --strict 2>/dev/null || true"
           }
         ]
       }

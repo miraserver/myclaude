@@ -12,10 +12,10 @@ Goal: Complete "requirements → verifiable delivery" in one pass, recording key
 ## Core Rules (Mandatory)
 
 - **10-Point Specify Gate**: Spec score `0-10`; must be `>=9` to enter Plan.
-- **2-Action Save**: Append an entry to `.sparv/journal.md` every 2 tool calls.
+- **2-Action Save**: Append an entry to `.sparv/plan/<session_id>/journal.md` every 2 tool calls.
 - **3-Failure Protocol**: Stop and escalate to user after 3 consecutive failures.
 - **EHRB**: Require explicit user confirmation when high-risk detected (production/sensitive data/destructive/billing API/security-critical).
-- **Fixed Phase Names**: `specify|plan|act|review|vault` (stored in `.sparv/state.yaml:current_phase`).
+- **Fixed Phase Names**: `specify|plan|act|review|vault` (stored in `.sparv/plan/<session_id>/state.yaml:current_phase`).
 
 ## Enhanced Rules (v1.1)
 
@@ -77,8 +77,10 @@ Initialize (run in project root):
 
 File conventions:
 
-- `.sparv/state.yaml`: State machine (minimum fields: `session_id/current_phase/action_count/consecutive_failures`)
-- `.sparv/journal.md`: Unified log (Plan/Progress/Findings all go here)
+The canonical active state is `.sparv/plan/<session_id>/state.yaml`. Hooks and state tools select the latest timestamp session ID with an existing state file; incomplete plan directories are ignored.
+
+- `.sparv/plan/<session_id>/state.yaml`: State machine (minimum fields: `session_id/current_phase/action_count/consecutive_failures`)
+- `.sparv/plan/<session_id>/journal.md`: Unified log (Plan/Progress/Findings all go here)
 - `.sparv/history/<session_id>/`: Archive directory
 
 ## Phase 1: Specify (10-Point Scale)
@@ -97,7 +99,7 @@ Each item scores 0/1/2, total 0-10:
 ## Phase 2: Plan
 
 - Break into atomic tasks (2-5 minute granularity), each with a verifiable output/test point.
-- Write the plan to `.sparv/journal.md` (Plan section or append directly).
+- Write the plan to `.sparv/plan/<session_id>/journal.md` (Plan section or append directly).
 
 ## Phase 3: Act
 
@@ -133,7 +135,7 @@ Archive current session:
 
 | Script | Purpose |
 |--------|---------|
-| `scripts/init-session.sh` | Initialize `.sparv/`, generate `state.yaml` + `journal.md` |
+| `scripts/init-session.sh` | Initialize `.sparv/plan/<session_id>/`, generate `state.yaml` + `journal.md` |
 | `scripts/save-progress.sh` | Maintain `action_count`, append to `journal.md` every 2 actions |
 | `scripts/check-ehrb.sh` | Scan diff/text, output (optionally write) `ehrb_flags` |
 | `scripts/failure-tracker.sh` | Maintain `consecutive_failures`, exit code 3 when reaching 3 |

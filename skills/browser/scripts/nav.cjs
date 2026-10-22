@@ -6,7 +6,7 @@ const url = process.argv[2];
 const newTab = process.argv.includes('--new');
 
 if (!url) {
-  console.error('Usage: nav.js <url> [--new]');
+  console.error('Usage: nav.cjs <url> [--new]');
   process.exit(1);
 }
 

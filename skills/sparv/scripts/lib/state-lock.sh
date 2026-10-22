@@ -11,13 +11,12 @@ sparv_die() {
 # Find active session directory
 sparv_find_active_session() {
 	local plan_dir=".sparv/plan"
-	if [ -d "$plan_dir" ]; then
-		local session
-		session="$(ls -1 "$plan_dir" 2>/dev/null | head -1)"
-		if [ -n "$session" ] && [ -f "$plan_dir/$session/state.yaml" ]; then
-			echo "$plan_dir/$session"
-		fi
-	fi
+	local state_file
+	# Session IDs are sortable timestamps; ignore incomplete plan directories.
+	for state_file in "$plan_dir"/*/state.yaml; do
+		[ -f "$state_file" ] || continue
+		printf '%s\n' "${state_file%/state.yaml}"
+	done | LC_ALL=C sort -r | head -n 1
 }
 
 # Auto-detect SPARV_DIR and STATE_FILE

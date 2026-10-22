@@ -78,7 +78,7 @@ NEXT_SECTION_LINE=0
 
 line_num=0
 while IFS= read -r line; do
-	((line_num++))
+	line_num=$((line_num+1))
 	if [[ "$line" =~ ^##[[:space:]]\[Unreleased\] ]]; then
 		IN_UNRELEASED=1
 		UNRELEASED_LINE=$line_num

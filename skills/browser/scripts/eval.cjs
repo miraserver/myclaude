@@ -5,7 +5,7 @@ const WebSocket = require('ws');
 
 const code = process.argv[2];
 if (!code) {
-  console.error('Usage: eval.js <javascript-expression>');
+  console.error('Usage: eval.cjs <javascript-expression>');
   process.exit(1);
 }
 
