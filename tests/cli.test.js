@@ -9,6 +9,7 @@ const path = require("node:path");
 const { test } = require("node:test");
 const { execFile, spawnSync } = require("node:child_process");
 const vm = require("node:vm");
+const { EventEmitter } = require("node:events");
 
 // Keep every in-process and spawned installer test away from the developer's home.
 const originalEnv = { ...process.env };
@@ -28,6 +29,7 @@ process.on("exit", () => {
   try { fs.rmSync(isolatedHome, { recursive: true, force: true }); } catch {}
 });
 const {
+  renderMenuFrame,
   installDefaultConfigs,
   applyModule,
   upsertModuleStatus,
@@ -53,6 +55,206 @@ const {
 const doHooks = require("../skills/do/hooks/hooks.json");
 const globalHooks = require("../hooks/hooks.json");
 const cliPath = path.resolve(__dirname, "../bin/cli.js");
+
+function menuItems(count) {
+  return Array.from({ length: count }, (_, i) => ({ id: `item:${i}`, label: `Item ${i + 1}` }));
+}
+
+function menuLines(frame) {
+  return frame.slice("\x1b[H".length, -"\x1b[J".length).split("\n");
+}
+
+test("menu frames use home and line erasure without clearing the screen", () => {
+  const { frame } = renderMenuFrame(menuItems(2), 0, new Set(), 0, "Menu", 80, 24);
+  assert.ok(frame.startsWith("\x1b[H"));
+  assert.ok(frame.endsWith("\x1b[J"));
+  assert.ok(!frame.includes("\x1b[2J"));
+  for (const line of menuLines(frame)) assert.ok(line.endsWith("\x1b[K"));
+});
+
+test("menu lines fit the terminal width and preserve short labels", () => {
+  const items = [{ id: "long", label: "x".repeat(100) }, { id: "short", label: "OK" }];
+  for (const columns of [30, 5, undefined]) {
+    const { frame } = renderMenuFrame(items, 0, new Set(), 0, "Title".repeat(30), columns, 24);
+    const lines = menuLines(frame).map((line) => line.slice(0, -3));
+    const width = Math.max(10, (columns || 80) - 1);
+    assert.ok(lines.every((line) => line.length <= width));
+    assert.equal(lines[0].length, width);
+    assert.ok(lines[0].endsWith("…"));
+    assert.ok(lines[1].length <= width);
+    assert.equal(lines[3].length, width);
+    assert.ok(lines[3].endsWith("…"));
+    assert.equal(lines[4], "  [ ] OK");
+  }
+});
+
+test("menu windows scroll only when needed and follow wrap-around", () => {
+  const items = menuItems(23);
+  function render(idx, offset, rows = 10) {
+    return renderMenuFrame(items, idx, new Set(), offset, "Menu", 80, rows);
+  }
+  let result = render(0, 0);
+  assert.equal(menuLines(result.frame).length - 3, 6);
+  assert.equal(result.offset, 0);
+  assert.match(result.frame, /\(1\/23\)/);
+  result = render(5, result.offset);
+  assert.equal(result.offset, 0);
+  result = render(6, result.offset);
+  assert.equal(result.offset, 1);
+  assert.match(result.frame, /> \[ \] Item 7\x1b\[K/);
+  assert.match(result.frame, /\(7\/23\)/);
+  result = render(5, result.offset);
+  assert.equal(result.offset, 1);
+  result = render(0, result.offset);
+  assert.equal(result.offset, 0);
+  result = render(22, result.offset);
+  assert.equal(result.offset, 17);
+  result = render(0, result.offset);
+  assert.equal(result.offset, 0);
+  assert.doesNotMatch(render(0, 0, 30).frame, /\(1\/23\)/);
+  assert.equal(menuLines(render(0, 0, 30).frame).length - 3, 23);
+  assert.equal(menuLines(render(22, 17, 4).frame).length - 3, 1);
+  assert.equal(menuLines(render(0, 0, undefined).frame).length - 3, 6);
+  const fallback = renderMenuFrame(items, 0, new Set(), 0, "Menu");
+  assert.equal(menuLines(fallback.frame).length - 3, 20);
+});
+
+test("menu frames show cursor and selection markers independently", () => {
+  const { frame } = renderMenuFrame(menuItems(3), 1, new Set(["item:0", "item:1"]), 0, "Menu", 80, 24);
+  assert.deepEqual(menuLines(frame).slice(3), [
+    "  [x] Item 1\x1b[K", "> [x] Item 2\x1b[K", "  [ ] Item 3\x1b[K",
+  ]);
+});
+
+function menuSandbox() {
+  const stdin = new EventEmitter();
+  const stdout = new EventEmitter();
+  const writes = [];
+  const rawModes = [];
+  const exits = [];
+  let pauses = 0;
+  stdin.isTTY = true;
+  stdin.setRawMode = (mode) => rawModes.push(mode);
+  stdin.pause = () => { pauses++; };
+  stdout.columns = 80;
+  stdout.rows = 10;
+  stdout.write = (value) => { writes.push(value); return true; };
+  const sandbox = {
+    module: { exports: {} },
+    require: (name) => name === "readline" ? { emitKeypressEvents: () => {} } : require(name),
+    process: { stdin, stdout, env: { ...process.env }, platform: process.platform,
+      exit: (code) => {
+        assert.equal(writes[writes.length - 1], "\x1b[?25h\x1b[?1049l");
+        assert.equal(stdin.listenerCount("keypress"), 0);
+        assert.equal(stdout.listenerCount("resize"), 0);
+        assert.equal(rawModes[rawModes.length - 1], false);
+        assert.equal(pauses, 1);
+        exits.push(code);
+      } },
+  };
+  vm.runInNewContext(fs.readFileSync(cliPath, "utf8") +
+    "\nmodule.exports.promptMultiSelect = promptMultiSelect;", sandbox);
+  return { prompt: sandbox.module.exports.promptMultiSelect, stdin, stdout, writes, rawModes, exits,
+    pauses: () => pauses };
+}
+
+function assertMenuClosed(menu) {
+  assert.equal(menu.writes.filter((value) => value === "\x1b[?25h\x1b[?1049l").length, 1);
+  assert.deepEqual(menu.rawModes, [true, false]);
+  assert.equal(menu.stdin.listenerCount("keypress"), 0);
+  assert.equal(menu.stdout.listenerCount("resize"), 0);
+  assert.equal(menu.pauses(), 1);
+}
+
+test("interactive menu writes one frame per key and restores on Enter", async () => {
+  const menu = menuSandbox();
+  const items = menuItems(23);
+  const result = menu.prompt(items, "Menu");
+  assert.equal(menu.writes[0], "\x1b[?1049h\x1b[?25l");
+  assert.equal(menu.writes.length, 2);
+  const onKey = menu.stdin.listeners("keypress")[0];
+  for (const key of ["space", "down", "space", "space", "up", "up", "space", "down", "right"]) {
+    const before = menu.writes.length;
+    menu.stdin.emit("keypress", "", { name: key });
+    assert.equal(menu.writes.length, before + 1);
+  }
+  assert.match(menu.writes[7], /> \[ \] Item 23/);
+  assert.match(menu.writes[9], /> \[x\] Item 1/);
+  menu.stdin.emit("keypress", "", { name: "return" });
+  assert.deepEqual(Array.from(await result), [items[0], items[22]]);
+  assertMenuClosed(menu);
+  const before = menu.writes.length;
+  onKey("", { name: "return" });
+  menu.stdout.emit("resize");
+  assert.equal(menu.writes.length, before);
+  assert.ok(menu.writes.every((value) => !value.includes("\x1b[2J")));
+});
+
+test("interactive menu redraws on resize and removes its listener", async () => {
+  const menu = menuSandbox();
+  const result = menu.prompt(menuItems(23), "Menu");
+  menu.stdout.columns = 25;
+  menu.stdout.rows = 7;
+  const before = menu.writes.length;
+  menu.stdout.emit("resize");
+  assert.equal(menu.writes.length, before + 1);
+  const lines = menuLines(menu.writes[menu.writes.length - 1]);
+  assert.equal(lines.length - 3, 3);
+  assert.ok(lines.every((line) => line.slice(0, -3).length <= 24));
+  menu.stdin.emit("keypress", "", { name: "return" });
+  await result;
+  assertMenuClosed(menu);
+});
+
+for (const [key, code] of [[{ name: "q" }, 0], [{ name: "c", ctrl: true }, 130]]) {
+  test(`interactive menu restores the terminal before exit ${code}`, () => {
+    const menu = menuSandbox();
+    menu.prompt(menuItems(2), "Menu");
+    const onKey = menu.stdin.listeners("keypress")[0];
+    menu.stdin.emit("keypress", "", key);
+    assert.deepEqual(menu.exits, [code]);
+    assertMenuClosed(menu);
+    onKey("", key);
+    assert.deepEqual(menu.exits, [code]);
+    assertMenuClosed(menu);
+  });
+}
+
+for (const stage of ["initial render", "keypress render", "resize render", "keypress selection"]) {
+  test(`interactive menu cleans up after a throwing ${stage}`, async () => {
+    const menu = menuSandbox();
+    const items = menuItems(2);
+    if (stage === "initial render") {
+      Object.defineProperty(items[0], "label", { get() { throw new Error("render failed"); } });
+    }
+    const result = menu.prompt(items, "Menu");
+    const rejection = assert.rejects(result, /render failed|selection failed/);
+    if (stage === "keypress selection") {
+      Object.defineProperty(items[0], "id", { get() { throw new Error("selection failed"); } });
+      menu.stdin.emit("keypress", "", { name: "space" });
+    } else if (stage !== "initial render") {
+      const write = menu.stdout.write;
+      menu.stdout.write = (value) => {
+        if (value.startsWith("\x1b[H")) throw new Error("render failed");
+        return write(value);
+      };
+      if (stage === "resize render") menu.stdout.emit("resize");
+      else menu.stdin.emit("keypress", "", { name: "down" });
+    }
+    await rejection;
+    assertMenuClosed(menu);
+  });
+}
+
+test("interactive menu rejects non-TTY stdin without changing the terminal", async () => {
+  const menu = menuSandbox();
+  menu.stdin.isTTY = false;
+  await assert.rejects(menu.prompt(menuItems(2), "Menu"), /No TTY\. Use --list or run in an interactive terminal\./);
+  assert.deepEqual(menu.writes, []);
+  assert.deepEqual(menu.rawModes, []);
+  assert.equal(menu.stdin.listenerCount("keypress"), 0);
+  assert.equal(menu.stdout.listenerCount("resize"), 0);
+});
 
 for (const [platform, cmd, script] of [
   ["win32", "cmd.exe", "install.bat"],

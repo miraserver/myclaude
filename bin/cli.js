@@ -730,67 +730,122 @@ function clearScreen() {
   process.stdout.write("\x1b[2J\x1b[H");
 }
 
+function renderMenuFrame(items, idx, selected, offset, title, columns, rows) {
+  const width = Math.max(10, (columns || 80) - 1);
+  const visibleRows = Math.max(1, (rows || 24) - 4);
+  offset = Math.max(0, Math.min(offset, items.length - visibleRows));
+  if (idx < offset) offset = idx;
+  else if (idx >= offset + visibleRows) offset = idx - visibleRows + 1;
+
+  const position = items.length > visibleRows ? `(${idx + 1}/${items.length}) ` : "";
+  const lines = [title, `${position}↑↓ move  Space toggle  Enter confirm  q quit`, ""];
+  for (let i = offset; i < Math.min(items.length, offset + visibleRows); i++) {
+    const cursor = i === idx ? ">" : " ";
+    const box = selected.has(items[i].id) ? "[x]" : "[ ]";
+    lines.push(`${cursor} ${box} ${items[i].label}`);
+  }
+  const frame = lines.map((line) => {
+    const text = line.length > width ? line.slice(0, width - 1) + "…" : line;
+    return text + "\x1b[K";
+  }).join("\n");
+  return { frame: "\x1b[H" + frame + "\x1b[J", offset };
+}
+
 async function promptMultiSelect(items, title) {
   if (!process.stdin.isTTY) {
     throw new Error("No TTY. Use --list or run in an interactive terminal.");
   }
 
   let idx = 0;
+  let offset = 0;
+  let closed = false;
   const selected = new Set();
 
-  readline.emitKeypressEvents(process.stdin);
-  process.stdin.setRawMode(true);
-
   function render() {
-    clearScreen();
-    process.stdout.write(`${title}\n`);
-    process.stdout.write("↑↓ move  Space toggle  Enter confirm  q quit\n\n");
-    for (let i = 0; i < items.length; i++) {
-      const it = items[i];
-      const cursor = i === idx ? ">" : " ";
-      const box = selected.has(it.id) ? "[x]" : "[ ]";
-      process.stdout.write(`${cursor} ${box} ${it.label}\n`);
-    }
+    const result = renderMenuFrame(items, idx, selected, offset, title,
+      process.stdout.columns, process.stdout.rows);
+    offset = result.offset;
+    process.stdout.write(result.frame);
   }
 
   function cleanup() {
-    process.stdin.setRawMode(false);
+    if (closed) return;
+    closed = true;
     process.stdin.removeListener("keypress", onKey);
-    process.stdin.pause();
+    process.stdout.removeListener("resize", onResize);
+    try {
+      process.stdin.setRawMode(false);
+    } finally {
+      try {
+        process.stdin.pause();
+      } finally {
+        process.stdout.write("\x1b[?25h\x1b[?1049l");
+      }
+    }
+  }
+
+  function fail(err) {
+    try {
+      cleanup();
+    } finally {
+      rejectPick(err);
+    }
+  }
+
+  function onResize() {
+    if (closed) return;
+    try {
+      render();
+    } catch (err) {
+      fail(err);
+    }
   }
 
   function onKey(_, key) {
-    if (!key) return;
-    if (key.name === "c" && key.ctrl) {
-      cleanup();
-      process.exit(130);
+    if (closed || !key) return;
+    try {
+      if (key.name === "c" && key.ctrl) {
+        cleanup();
+        return process.exit(130);
+      }
+      if (key.name === "q") {
+        cleanup();
+        return process.exit(0);
+      }
+      if (key.name === "up") idx = (idx - 1 + items.length) % items.length;
+      else if (key.name === "down") idx = (idx + 1) % items.length;
+      else if (key.name === "space") {
+        const id = items[idx].id;
+        if (selected.has(id)) selected.delete(id);
+        else selected.add(id);
+      } else if (key.name === "return") {
+        cleanup();
+        const picked = items.filter((it) => selected.has(it.id));
+        return resolvePick(picked);
+      }
+      render();
+    } catch (err) {
+      fail(err);
     }
-    if (key.name === "q") {
-      cleanup();
-      process.exit(0);
-    }
-    if (key.name === "up") idx = (idx - 1 + items.length) % items.length;
-    else if (key.name === "down") idx = (idx + 1) % items.length;
-    else if (key.name === "space") {
-      const id = items[idx].id;
-      if (selected.has(id)) selected.delete(id);
-      else selected.add(id);
-    } else if (key.name === "return") {
-      cleanup();
-      clearScreen();
-      const picked = items.filter((it) => selected.has(it.id));
-      return resolvePick(picked);
-    }
-    render();
   }
 
   let resolvePick;
-  const result = new Promise((resolve) => {
+  let rejectPick;
+  const result = new Promise((resolve, reject) => {
     resolvePick = resolve;
+    rejectPick = reject;
   });
 
-  process.stdin.on("keypress", onKey);
-  render();
+  try {
+    process.stdout.write("\x1b[?1049h\x1b[?25l");
+    readline.emitKeypressEvents(process.stdin);
+    process.stdin.setRawMode(true);
+    process.stdin.on("keypress", onKey);
+    process.stdout.on("resize", onResize);
+    render();
+  } catch (err) {
+    fail(err);
+  }
   return result;
 }
 
@@ -1839,6 +1894,7 @@ async function main() {
 }
 
 module.exports = {
+  renderMenuFrame,
   installDefaultConfigs,
   applyModule,
   upsertModuleStatus,
