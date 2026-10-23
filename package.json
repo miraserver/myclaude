@@ -1,6 +1,6 @@
 {
   "name": "myclaude",
-  "version": "6.11.2",
+  "version": "6.11.3",
   "private": true,
   "scripts": {
     "test": "node --test tests/cli.test.js"

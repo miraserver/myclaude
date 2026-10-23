@@ -1,7 +1,7 @@
 {
   "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
   "name": "myclaude",
-  "version": "6.11.2",
+  "version": "6.11.3",
   "description": "Professional multi-agent development workflows with OmO orchestration, Requirements-Driven and BMAD methodologies",
   "owner": {
     "name": "miraserver"
@@ -10,35 +10,35 @@
     {
       "name": "omo",
       "description": "Multi-agent orchestration for code analysis, bug investigation, fix planning, and implementation with intelligent routing to specialized agents",
-      "version": "6.11.2",
+      "version": "6.11.3",
       "source": "./skills/omo",
       "category": "development"
     },
     {
       "name": "requirements",
       "description": "Requirements-driven development workflow with quality gates for practical feature implementation",
-      "version": "6.11.2",
+      "version": "6.11.3",
       "source": "./agents/requirements",
       "category": "development"
     },
     {
       "name": "bmad",
       "description": "Full BMAD agile workflow with role-based agents (PO, Architect, SM, Dev, QA) and interactive approval gates",
-      "version": "6.11.2",
+      "version": "6.11.3",
       "source": "./agents/bmad",
       "category": "development"
     },
     {
       "name": "dev-kit",
       "description": "Essential development commands for coding, debugging, testing, optimization, and documentation",
-      "version": "6.11.2",
+      "version": "6.11.3",
       "source": "./agents/development-essentials",
       "category": "productivity"
     },
     {
       "name": "sparv",
       "description": "Minimal SPARV workflow (Specify→Plan→Act→Review→Vault) with 10-point spec gate, unified journal, 2-action saves, 3-failure protocol, and EHRB risk detection",
-      "version": "6.11.2",
+      "version": "6.11.3",
       "source": "./skills/sparv",
       "category": "development"
     }
