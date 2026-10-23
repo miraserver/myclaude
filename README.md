@@ -19,8 +19,8 @@ npx github:miraserver/myclaude
 ## Prerequisites
 
 - Node.js 18 or newer
-- Python 3 (on Windows, the `py` launcher or `python`)
-- Git
+- Python 3, using a real interpreter (not the Microsoft Store stub)
+- Git on `PATH` (npm uses Git for `github:` package specs)
 - Windows users: Git Bash for `.sh`-based skills such as `sparv`
 - Backend CLIs installed and logged in as required by the module:
 
@@ -182,6 +182,13 @@ which codex && codex --version
 which claude && claude --version
 which gemini && gemini --version
 ```
+
+**`npm error syscall spawn git` / `An unknown git error occurred`:** Install Git, reopen the terminal, and retry. To install without Git, use a release tag in the tarball URL:
+```bash
+npx -y https://codeload.github.com/miraserver/myclaude/tar.gz/refs/tags/vX.Y.Z
+```
+
+**Hook error `Failed with non-blocking status code: Python`:** Python 3 is missing or Windows is resolving the Microsoft Store stub. Install Python 3, disable the App execution aliases, open a new terminal, run `npx github:miraserver/myclaude --update`, then restart Claude Code.
 
 ## FAQ
 

@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### Bug Fixes
+
+- Stop installation before writing when selected hooks require Python 3 but no working interpreter is found, including Windows Microsoft Store stubs; install Python 3 with “Add python.exe to PATH” or set `MYCLAUDE_PYTHON`.
+- Document missing Git and Python troubleshooting and add post-release CI smoke coverage for `npx github:` and tarball URL installs.
+
 ## [6.11.2] - 2026-10-22
 
 ### Bug Fixes

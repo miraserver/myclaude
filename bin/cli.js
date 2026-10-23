@@ -348,23 +348,69 @@ function entryPointsInto(entry, roots) {
 }
 
 let pythonCommand;
+let pythonCommandResolved = false;
+let pythonWarningWritten = false;
 let skipWrapper = false;
 
-function resolvePythonCommand() {
+function findPythonCommand() {
   if (process.env.MYCLAUDE_PYTHON) return process.env.MYCLAUDE_PYTHON;
-  if (pythonCommand) return pythonCommand;
-  if (process.platform !== "win32") return (pythonCommand = "python3");
-
-  for (const [cmd, ...rest] of [["python3"], ["python"], ["py", "-3"]]) {
+  if (pythonCommandResolved) return pythonCommand;
+  const candidates = process.platform === "win32" ? [["python3"], ["python"], ["py", "-3"]] : [["python3"]];
+  for (const [cmd, ...rest] of candidates) {
     const result = spawnSync(cmd, [...rest, "-c", "import sys"], {
       stdio: "ignore",
       windowsHide: true,
       timeout: 10000,
     });
-    if (result.status === 0) return (pythonCommand = [cmd, ...rest].join(" "));
+    if (result.status === 0) {
+      pythonCommand = [cmd, ...rest].join(" ");
+      pythonCommandResolved = true;
+      return pythonCommand;
+    }
   }
-  process.stderr.write("Warning: no working Python interpreter found; using python3.\n");
-  return (pythonCommand = "python3");
+  pythonCommandResolved = true;
+  pythonCommand = null;
+  return null;
+}
+
+function resolvePythonCommand() {
+  const found = findPythonCommand();
+  if (found) return found;
+  if (!pythonWarningWritten) {
+    process.stderr.write("Warning: no working Python interpreter found; using python3.\n");
+    pythonWarningWritten = true;
+  }
+  return "python3";
+}
+
+function pythonHookNames(modules, repoRoot) {
+  const names = [];
+  for (const [name, mod] of Object.entries(modules || {})) {
+    const ops = Array.isArray(mod && mod.operations) ? mod.operations : [];
+    let found = false;
+    for (const op of ops) {
+      if (!op || op.type !== "copy_dir") continue;
+      const source = typeof op.source === "string" ? op.source : op.target;
+      if (typeof source !== "string") continue;
+      for (const file of [path.join(repoRoot, source, "hooks", "hooks.json"), path.join(repoRoot, source, "hooks.json")]) {
+        try {
+          const hooks = JSON.parse(fs.readFileSync(file, "utf8"));
+          if (JSON.stringify(hooks).match(/\"command\"\s*:\s*\"python3(?=\s)/)) found = true;
+        } catch {}
+      }
+    }
+    if (found) names.push(name);
+  }
+  return names;
+}
+
+function requirePythonForHooks(names) {
+  if (!names.length || findPythonCommand()) return;
+  const tried = process.platform === "win32" ? "python3, python, py -3" : "python3";
+  const windowsHint = process.platform === "win32"
+    ? ' On Windows, "python"/"python3" may be Microsoft Store stubs; disable them in Settings > Apps > Advanced app settings > App execution aliases.'
+    : "";
+  throw new Error(`Python 3 is required by hooks of: ${names.join(", ")}. No working Python interpreter found (tried: ${tried}).${windowsHint} Install Python 3 (https://www.python.org/downloads/ with "Add python.exe to PATH", or: winget install Python.Python.3.12), open a new terminal and rerun. Set MYCLAUDE_PYTHON to use a specific interpreter.`);
 }
 
 function replaceHookVariables(obj, pluginRoot) {
@@ -589,7 +635,6 @@ async function updateInstalledModules(installDir, tag, config, dryRun, explicitF
       return;
     }
     const status = loadInstalledStatus(installDir).modules;
-    if (!dryRun) await migratePluginManifestOwnership(installDir, repoRoot, config);
     const candidates = requestedModules && requestedModules !== "all"
       ? requestedModules.split(",").map(s => s.trim()).filter(Boolean) : fromStatus;
     const toUpdate = candidates.filter((name) => {
@@ -612,6 +657,16 @@ async function updateInstalledModules(installDir, tag, config, dryRun, explicitF
       for (const name of toUpdate) process.stdout.write(`module:${name}\n`);
       return;
     }
+
+    const selectedModules = {};
+    for (const name of toUpdate) {
+      if (name.startsWith("skill:")) {
+        const skillName = name.slice(6);
+        selectedModules[name] = { operations: [{ type: "copy_dir", source: `skills/${skillName}`, target: `skills/${skillName}` }] };
+      } else if (mods[name]) selectedModules[name] = mods[name];
+    }
+    requirePythonForHooks(pythonHookNames(selectedModules, repoRoot));
+    await migratePluginManifestOwnership(installDir, repoRoot, config);
 
     await fs.promises.mkdir(installDir, { recursive: true });
     const installState = { wrapperInstalled: false, continueWrapperFailure: true, failures: [] };
@@ -1562,6 +1617,17 @@ async function installSelected(picks, tag, config, installDir, force, dryRun, of
       }
     }
 
+    const selectedModules = {};
+    for (const pick of picks) {
+      if (pick.kind === "module") selectedModules[pick.moduleName] = ((config && config.modules) || {})[pick.moduleName];
+      if (pick.kind === "skill") {
+        if (Object.prototype.hasOwnProperty.call((config && config.modules) || {}, pick.skillName)) {
+          selectedModules[pick.skillName] = config.modules[pick.skillName];
+        } else selectedModules[`skill:${pick.skillName}`] = { operations: [{ type: "copy_dir", source: `skills/${pick.skillName}`, target: `skills/${pick.skillName}` }] };
+      }
+    }
+    requirePythonForHooks(pythonHookNames(selectedModules, repoRoot));
+
     await fs.promises.mkdir(installDir, { recursive: true });
     const installState = { wrapperInstalled: false };
 
@@ -1787,6 +1853,7 @@ module.exports = {
   hookEntryKey,
   entryPointsInto,
   resolvePythonCommand,
+  findPythonCommand,
   mergeHooksToSettings,
   unmergeHooksFromSettings,
   mergeModuleHooks,

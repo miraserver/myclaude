@@ -260,3 +260,22 @@ jobs:
           type "%RUNNER_TEMP%\version.log"
           findstr /L /C:"%CODEAGENT_WRAPPER_VERSION%" "%RUNNER_TEMP%\version.log"
           if errorlevel 1 exit /b 1
+
+      - name: Smoke test published npx installer entry points
+        shell: bash
+        run: |
+          set -euo pipefail
+          smoke_home="$RUNNER_TEMP/npx-smoke-home"
+          mkdir -p "$smoke_home"
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            export USERPROFILE="$(cygpath -w "$smoke_home")"
+          else
+            export USERPROFILE="$smoke_home"
+          fi
+          export HOME="$smoke_home"
+          npx -y "github:${{ github.repository }}#${{ github.ref_name }}" --tag "${{ github.ref_name }}" --list > "$RUNNER_TEMP/npx-github.log" 2>&1
+          cat "$RUNNER_TEMP/npx-github.log"
+          grep -F "module:do" "$RUNNER_TEMP/npx-github.log"
+          npx -y "https://codeload.github.com/${{ github.repository }}/tar.gz/refs/tags/${{ github.ref_name }}" --help > "$RUNNER_TEMP/npx-tarball.log" 2>&1
+          cat "$RUNNER_TEMP/npx-tarball.log"
+          grep -F "myclaude" "$RUNNER_TEMP/npx-tarball.log"

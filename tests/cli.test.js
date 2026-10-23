@@ -406,6 +406,37 @@ function commandEntry(command, extra = {}) {
   return { hooks: [{ type: "command", command, timeout: 1800 }], ...extra };
 }
 
+function pythonSandbox(repo, platform, okCmd = null, t, envOverrides = {}) {
+  const source = fs.readFileSync(cliPath, "utf8");
+  const root = path.dirname(repo);
+  const calls = [];
+  let wrapperCalls = 0;
+  const sandbox = {
+    module: { exports: {} }, __dirname: path.join(repo, "bin"),
+    require: (name) => name === "child_process" ? {
+      spawn: () => { wrapperCalls++; throw new Error("wrapper should not run"); },
+      spawnSync: (cmd, args, options) => {
+        calls.push({ cmd, args, options });
+        return { status: cmd === okCmd ? 0 : 9009 };
+      },
+    } : require(name),
+    process: {
+      platform,
+      env: { HOME: root, USERPROFILE: root, ...envOverrides },
+      stdout: { write() {} },
+      stderr: { write() {} },
+    },
+  };
+  vm.runInNewContext(source + `
+    repoRootFromHere = () => ${JSON.stringify(repo)};
+    module.exports.install = installSelected;
+    module.exports.update = updateInstalledModules;
+    module.exports.uninstall = uninstallModule;
+  `, sandbox);
+  if (t) t.after(() => {});
+  return { api: sandbox.module.exports, calls, wrapperCalls: () => wrapperCalls };
+}
+
 function modelsFixture(t, agents) {
   const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "myclaude-models-"));
   for (const name of ["USERPROFILE", "HOME"]) {
@@ -851,7 +882,7 @@ test("offline listing makes no HTTPS requests", (t) => {
   assert.equal(result.stderr, "");
 });
 
-test("Windows Python probing skips broken interpreters and caches the result", (t) => {
+test("Python probing follows platform candidates, probes non-Windows, and caches null", (t) => {
   fixture(t);
   const calls = [];
   let warnings = "";
@@ -881,10 +912,168 @@ test("Windows Python probing skips broken interpreters and caches the result", (
   } : require(name);
   const fallbackSandbox = { ...sandbox, module: { exports: {} } };
   vm.runInNewContext(fs.readFileSync(cliPath, "utf8"), fallbackSandbox);
-  assert.equal(fallbackSandbox.module.exports.resolvePythonCommand(), "python3");
-  assert.equal(fallbackSandbox.module.exports.resolvePythonCommand(), "python3");
+  assert.equal(fallbackSandbox.module.exports.findPythonCommand(), null);
+  assert.equal(fallbackSandbox.module.exports.findPythonCommand(), null);
   assert.equal(calls.length, 3);
-  assert.equal(warnings.trim().split("\n").length, 1);
+
+  calls.length = 0;
+  const unixSandbox = {
+    module: { exports: {} },
+    require: (name) => name === "child_process" ? {
+      spawnSync: (cmd, args, options) => { calls.push({ cmd, args, options }); return { status: 1 }; },
+    } : require(name),
+    process: { platform: "linux", env: {}, stderr: { write() {} } },
+  };
+  vm.runInNewContext(fs.readFileSync(cliPath, "utf8"), unixSandbox);
+  assert.equal(unixSandbox.module.exports.findPythonCommand(), null);
+  assert.deepEqual(calls.map((call) => call.cmd), ["python3"]);
+});
+
+test("Python override is verbatim and skips interpreter probing", (t) => {
+  fixture(t);
+  let calls = 0;
+  const sandbox = {
+    module: { exports: {} },
+    require: (name) => name === "child_process" ? { spawnSync: () => { calls++; return { status: 1 }; } } : require(name),
+    process: { platform: "win32", env: { MYCLAUDE_PYTHON: 'C:\\Python path\\python.exe -X' }, stderr: { write() {} } },
+  };
+  vm.runInNewContext(fs.readFileSync(cliPath, "utf8"), sandbox);
+  assert.equal(sandbox.module.exports.findPythonCommand(), 'C:\\Python path\\python.exe -X');
+  assert.equal(calls, 0);
+});
+
+test("Python hook preflight rejects before install writes and accepts working Windows candidates", async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "myclaude-python-preflight-"));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const repo = path.join(root, "repo");
+  const installDir = path.join(root, "install");
+  fs.mkdirSync(path.join(repo, "skills", "demo", "hooks"), { recursive: true });
+  fs.writeFileSync(path.join(repo, "skills", "demo", "hooks", "hooks.json"), JSON.stringify({ hooks: {
+    Stop: [commandEntry('python3 "${CLAUDE_PLUGIN_ROOT}/hooks/stop.py"')],
+  } }));
+  const source = fs.readFileSync(cliPath, "utf8");
+  const config = { modules: { demo: { operations: [{ type: "copy_dir", source: "skills/demo", target: "skills/demo" }] } } };
+  const run = async (okCmd) => {
+    let wrapperCalls = 0;
+    const sandbox = {
+      module: { exports: {} }, __dirname: path.join(repo, "bin"),
+      require: (name) => name === "child_process" ? {
+        spawn: () => { wrapperCalls++; throw new Error("wrapper should not run"); },
+        spawnSync: (cmd) => ({ status: cmd === okCmd ? 0 : 9009 }),
+      } : require(name),
+      process: { platform: "win32", env: { HOME: root, USERPROFILE: root }, stdout: { write() {} }, stderr: { write() {} } },
+    };
+    vm.runInNewContext(source + `
+      repoRootFromHere = () => ${JSON.stringify(repo)};
+      module.exports.install = installSelected;
+      module.exports.update = updateInstalledModules;
+    `, sandbox);
+    return { api: sandbox.module.exports, wrapperCalls: () => wrapperCalls };
+  };
+  const failed = await run(null);
+  await assert.rejects(failed.api.install([{ kind: "module", moduleName: "demo", id: "demo" }], null,
+    config, installDir, false, false, true), (err) => {
+    assert.match(err.message, /hooks of: demo/);
+    assert.match(err.message, /MYCLAUDE_PYTHON/);
+    assert.match(err.message, /Microsoft Store stubs/);
+    return true;
+  });
+  assert.equal(fs.existsSync(installDir), false);
+  assert.equal(failed.wrapperCalls(), 0);
+
+  for (const [candidate, prefix] of [["python", 'python "'], ["py", 'py -3 "']]) {
+    const dir = path.join(root, candidate);
+    const working = await run(candidate);
+    await working.api.install([{ kind: "module", moduleName: "demo", id: "demo" }], null,
+      config, dir, false, false, true);
+    const settings = JSON.parse(fs.readFileSync(path.join(dir, "settings.json"), "utf8"));
+    assert.ok(settings.hooks.Stop[0].hooks[0].command.startsWith(prefix));
+  }
+});
+
+function makePythonModule(t, name = "demo", withHooks = true) {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "myclaude-python-case-"));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const repo = path.join(root, "repo");
+  const installDir = path.join(root, "install");
+  const source = path.join(repo, "skills", name);
+  fs.mkdirSync(source, { recursive: true });
+  fs.writeFileSync(path.join(source, "payload.txt"), "payload\n");
+  if (withHooks) {
+    fs.mkdirSync(path.join(source, "hooks"), { recursive: true });
+    fs.writeFileSync(path.join(source, "hooks", "hooks.json"), JSON.stringify({ hooks: {
+      Stop: [commandEntry('python3 "${CLAUDE_PLUGIN_ROOT}/hooks/stop.py"')],
+    } }));
+  }
+  const config = { modules: { [name]: { operations: [{ type: "copy_dir", source: `skills/${name}`, target: `skills/${name}` }] } } };
+  return { root, repo, installDir, config, name };
+}
+
+test("update Python preflight preserves all files and skips migration and wrapper", async (t) => {
+  const f = makePythonModule(t);
+  fs.mkdirSync(path.join(f.installDir, ".claude-plugin"), { recursive: true });
+  fs.mkdirSync(path.join(f.installDir, "skills", "demo"), { recursive: true });
+  fs.writeFileSync(path.join(f.installDir, "skills", "demo", "payload.txt"), "old\n");
+  fs.writeFileSync(path.join(f.installDir, "settings.json"), JSON.stringify({ hooks: { Stop: [commandEntry('python3 "old.py"', { __module__: "demo" })] } }, null, 2) + "\n");
+  fs.writeFileSync(path.join(f.installDir, ".claude-plugin", "plugin.json"), "legacy\n");
+  fs.writeFileSync(path.join(f.installDir, "installed_modules.json"), JSON.stringify({ modules: { demo: { module: "demo", status: "installed", files: { ".claude-plugin/plugin.json": "deadbeef" } } } }, null, 2) + "\n");
+  const before = new Map();
+  for (const file of ["settings.json", "installed_modules.json", "skills/demo/payload.txt", ".claude-plugin/plugin.json"]) before.set(file, fs.readFileSync(path.join(f.installDir, file)));
+  const s = pythonSandbox(f.repo, "win32", null);
+  await assert.rejects(s.api.update(f.installDir, null, f.config, false, false, true), /Python 3 is required by hooks of: demo/);
+  for (const [file, bytes] of before) assert.deepEqual(fs.readFileSync(path.join(f.installDir, file)), bytes, file);
+  assert.equal(s.wrapperCalls(), 0);
+});
+
+test("update rewrites previously installed python3 hooks when Python appears", async (t) => {
+  const f = makePythonModule(t);
+  fs.mkdirSync(path.join(f.installDir, "skills", "demo"), { recursive: true });
+  fs.writeFileSync(path.join(f.installDir, "settings.json"), JSON.stringify({ hooks: { Stop: [commandEntry('python3 "old.py"', { __module__: "demo" })] } }, null, 2));
+  fs.writeFileSync(path.join(f.installDir, "installed_modules.json"), JSON.stringify({ modules: { demo: { module: "demo", status: "installed" } } }, null, 2));
+  const s = pythonSandbox(f.repo, "win32", "python");
+  await s.api.update(f.installDir, null, f.config, false, false, true);
+  const hooks = JSON.parse(fs.readFileSync(path.join(f.installDir, "settings.json"), "utf8")).hooks.Stop;
+  assert.ok(hooks.some((e) => e.__module__ === "demo" && e.hooks[0].command.startsWith("python \"")));
+  assert.equal(hooks.some((e) => e.__module__ === "demo" && e.hooks[0].command.startsWith("python3 ")), false);
+});
+
+test("no-hook install, Linux failure, and bypass operations avoid inappropriate probing", async (t) => {
+  const noHooks = makePythonModule(t, "plain", false);
+  const plain = pythonSandbox(noHooks.repo, "win32", null);
+  await plain.api.install([{ kind: "module", moduleName: "plain", id: "plain" }], null, noHooks.config, noHooks.installDir, false, false, true);
+  assert.equal(fs.existsSync(path.join(noHooks.installDir, "installed_modules.json")), true);
+
+  const linux = makePythonModule(t);
+  const failed = pythonSandbox(linux.repo, "linux", null);
+  await assert.rejects(failed.api.install([{ kind: "module", moduleName: "demo", id: "demo" }], null, linux.config, linux.installDir, false, false, true), (err) => {
+    assert.match(err.message, /tried: python3/);
+    assert.doesNotMatch(err.message, /Microsoft Store/);
+    return true;
+  });
+  assert.equal(fs.existsSync(linux.installDir), false);
+
+  const dry = makePythonModule(t);
+  const drySandbox = pythonSandbox(dry.repo, "win32", null);
+  await drySandbox.api.install([{ kind: "module", moduleName: "demo", id: "demo" }], null, dry.config, dry.installDir, false, true, true);
+  fs.mkdirSync(dry.installDir, { recursive: true });
+  fs.writeFileSync(path.join(dry.installDir, "installed_modules.json"), JSON.stringify({ modules: { demo: { module: "demo", status: "installed" } } }));
+  await drySandbox.api.update(dry.installDir, null, dry.config, true, false, true);
+  await drySandbox.api.uninstall("demo", dry.config, dry.repo, dry.installDir, false);
+  assert.equal(drySandbox.calls.length, 0);
+});
+
+test("resolvePythonCommand fallback warns once", (t) => {
+  fixture(t);
+  let warnings = "";
+  const sandbox = {
+    module: { exports: {} },
+    require: (name) => name === "child_process" ? { spawnSync: () => ({ status: 1 }) } : require(name),
+    process: { platform: "win32", env: {}, stderr: { write: (s) => { warnings += s; } } },
+  };
+  vm.runInNewContext(fs.readFileSync(cliPath, "utf8"), sandbox);
+  assert.equal(sandbox.module.exports.resolvePythonCommand(), "python3");
+  assert.equal(sandbox.module.exports.resolvePythonCommand(), "python3");
+  assert.equal(warnings.split("\n").filter(Boolean).length, 1);
   assert.match(warnings, /Warning/);
 });
 
